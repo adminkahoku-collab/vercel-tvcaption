@@ -56,7 +56,6 @@
   <div class="error-log" id="errorLog"></div>
 
   <script type="module">
-    // エラー表示処理
     function showError(msg) {
       console.error(msg);
       const errEl = document.getElementById('errorLog');
@@ -74,7 +73,6 @@
     window.addEventListener('error', (e) => showError(e.message));
     window.addEventListener('unhandledrejection', (e) => showError(e.reason));
 
-    // Firebase SDK の初期化
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getDatabase, ref, set, push, remove, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
@@ -98,18 +96,15 @@
     const previewArea = document.getElementById('previewArea');
 
     let recognition = null;
-    let isExplicitlyStopped = false;
+    let isExplicitlyStopped = true;
     let lastSentFinalText = '';
     let isSummarizing = false;
 
-    // 自動要約の消費制御用パラメータ
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
-    // 有料枠運用の場合は間隔を短く（例: 1分＝ 1 * 60 * 1000）、無料枠運用の場合は長く（例: 20分＝ 20 * 60 * 1000）変更可能です
     const SUMMARY_INTERVAL_MS = 20 * 60 * 1000; 
     const MIN_CHAR_DIFF = 50; 
 
-    // ブラウザ判別による初期判定
     const userAgent = navigator.userAgent.toLowerCase();
     if (userAgent.includes('edg/')) {
       engineSelect.value = 'edge';
@@ -117,7 +112,6 @@
       engineSelect.value = 'chrome';
     }
 
-    // 言い淀み除去フィルタ (Edgeモード用)
     function cleanFillerText(text) {
       if (!text) return '';
       return text
@@ -126,9 +120,6 @@
         .trim();
     }
 
-    // ==========================================
-    // 1. 字幕送信処理 (Gemini API は不使用)
-    // ==========================================
     async function processAndSend(text, isInterim = false) {
       let processedText = text ? text.trim() : '';
       if (!processedText || !db) return;
@@ -171,12 +162,192 @@
       }
     }
 
-    // ==========================================
-    // 2. 音声認識（手動ON/OFF & 自動復旧機能付き）
-    // ==========================================
+    // 音声認識の初期化
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognition = new SpeechRecognition();
       recognition.lang = 'ja-JP';
       recognition.continuous = true;
       recognition.interimResults = true;
+
+      recognition.onstart = () => { 
+        statusEl.textContent = '認識中 (自動バックグラウンド要約稼働中)'; 
+        statusEl.style.color = '#00e676';
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        clearError();
+      };
+
+      recognition.onend = () => { 
+        if (!isExplicitlyStopped) {
+          try { 
+            recognition.start(); 
+          } catch(e) {
+            console.warn("再接続試行中...", e);
+          }
+        } else {
+          statusEl.textContent = '停止中';
+          statusEl.style.color = '#ff5252';
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+        }
+      };
+
+      recognition.onerror = (event) => {
+        // マイク未許可や無音切断時の通知
+        if (event.error === 'not-allowed') {
+          showError("マイクへのアクセス権限が拒否されています。ブラウザの設定でマイクを許可してください。");
+        } else if (event.error !== 'no-speech') {
+          console.warn("音声認識イベント通知:", event.error);
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let interimText = '';
+        let finalText = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const res = event.results[i];
+          if (res.isFinal) {
+            finalText += res[0].transcript;
+          } else {
+            interimText += res[0].transcript;
+          }
+        }
+
+        if (finalText !== '') {
+          processAndSend(finalText, false);
+        } else if (interimText !== '') {
+          processAndSend(interimText, true);
+        }
+      };
+    } else {
+      showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
+    }
+
+    async function autoGenerateSummary() {
+      if (isSummarizing || isExplicitlyStopped || !db) return;
+
+      const now = Date.now();
+      
+      try {
+        const listRef = ref(db, 'transcripts/list');
+        const snapshot = await get(listRef);
+        
+        if (!snapshot.exists()) return;
+
+        const data = snapshot.val();
+        const logs = Object.values(data).map(item => item.content);
+        let fullText = logs.join('\n');
+        const totalCharCount = fullText.trim().length;
+
+        if (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF) return;
+
+        if (fullText.length > 4000) {
+          fullText = fullText.slice(-4000);
+        }
+
+        isSummarizing = true;
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: `以下は進行中の会議・対話のログです。これまでの全体内容を整理し、主要な話題、決定事項、重要なポイントを箇条書きで簡潔に要約してください。\n\n【文字起こし】\n${fullText}`
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`API接続エラー: HTTP ${response.status}`);
+        }
+
+        const resData = await response.json();
+
+        if (resData.error) {
+          const detailMsg = typeof resData.error === 'object' 
+            ? (resData.error.message || JSON.stringify(resData.error)) 
+            : resData.error;
+          throw new Error(`Gemini APIエラー: ${detailMsg}`);
+        }
+
+        const summaryResult = (
+          resData.candidates?.[0]?.content?.parts?.[0]?.text ||
+          resData.text ||
+          resData.content ||
+          resData.message ||
+          (typeof resData === 'string' ? resData : '')
+        ).trim();
+
+        if (summaryResult) {
+          await set(ref(db, 'transcripts/summary'), {
+            text: summaryResult,
+            updatedAt: Date.now()
+          });
+
+          lastSummaryTime = now;
+          lastSummaryCharLength = totalCharCount;
+        }
+
+      } catch (err) {
+        showError("自動要約エラー: " + err.message);
+      } finally {
+        isSummarizing = false;
+      }
+    }
+
+    setInterval(() => {
+      const now = Date.now();
+      if (now - lastSummaryTime >= SUMMARY_INTERVAL_MS) {
+        autoGenerateSummary();
+      }
+    }, 60 * 1000);
+
+    // ボタンの登録と強固な起動処理
+    startBtn.addEventListener('click', () => {
+      if (!recognition) {
+        alert("音声認識機能が初期化されていません。対応ブラウザ（Chrome/Edge）でお試しください。");
+        return;
+      }
+      isExplicitlyStopped = false;
+      lastSentFinalText = '';
+      clearError();
+
+      try {
+        recognition.start();
+      } catch (e) {
+        // すでに動作中の場合は一旦ストップしてから再起動
+        console.warn("認識再起動処理中:", e.message);
+        try {
+          recognition.stop();
+          setTimeout(() => recognition.start(), 200);
+        } catch(err) {
+          showError("認識起動失敗: " + err.message);
+        }
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      isExplicitlyStopped = true;
+      try {
+        recognition.stop();
+      } catch(e){}
+    });
+
+    clearBtn.addEventListener('click', async () => {
+      if (!db) return;
+      if (confirm('すべての字幕ログおよび要約を削除しますか？')) {
+        try {
+          await remove(ref(db, 'transcripts'));
+          lastSentFinalText = '';
+          previewArea.innerHTML = 'ログと要約をクリアしました。';
+          alert('消去完了しました。');
+          clearError();
+        } catch (error) {
+          showError("ログ消去エラー: " + error.message);
+        }
+      }
+    });
+  </script>
+</body>
+</html>
