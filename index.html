@@ -15,7 +15,7 @@
       color: #e0e0e0;             /* 白抜き文字 */
     }
     
-    /* 左パネル：字幕表示（余白を最小限にして幅を広げる） */
+    /* 左パネル：字幕表示 */
     #left-panel {
       flex: 2;
       padding-right: 10px;
@@ -32,14 +32,14 @@
       padding-right: 5px;
     }
     
-    /* 字幕の文言：文字サイズを標準に戻し、1行に入る文字数を増加 */
+    /* 字幕の文言：隙間を調整 */
     .log-item {
-      margin-bottom: 6px;
-      border-bottom: 1px dashed #333;
-      padding-bottom: 4px;
-      line-height: 1.0;
-      font-size: 0.95rem; /* 幅を広く保つために適度なサイズに変更 */
-      word-break: break-word; /* 長い単語でも自然に折返す */
+      margin-bottom: 6px;   /* 点線の下側（次の発言との間）の隙間 */
+      padding-bottom: 4px;  /* 文字と点線の間の隙間 */
+      border-bottom: 1px dashed #333; /* 点線 */
+      line-height: 1.4;
+      font-size: 0.95rem;
+      word-break: break-word;
     }
     
     /* 発話中の途中経過エリア */
@@ -70,18 +70,6 @@
       color: #00e676;
     }
 
-    #summaryBox {
-      white-space: pre-wrap;
-      background: #2a2a2a;
-      color: #f0f0f0;
-      padding: 10px;
-      border: 1px solid #444;
-      border-radius: 4px;
-      min-height: 200px;
-      line-height: 1.5;
-      font-size: 0.9rem;
-    }
-
     .btn-group { margin-bottom: 10px; }
     
     button {
@@ -100,6 +88,18 @@
       background-color: #444;
     }
 
+    #summaryBox {
+      white-space: pre-wrap;
+      background: #2a2a2a;
+      color: #f0f0f0;
+      padding: 10px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      min-height: 200px;
+      line-height: 1.5;
+      font-size: 0.9rem;
+    }
+
     #updateTime {
       font-size: 0.8rem;
       color: #888;
@@ -112,6 +112,11 @@
   <!-- 左側：リアルタイム字幕表示エリア -->
   <div id="left-panel">
     <h2>リアルタイム字幕</h2>
+    <!-- 字幕用のダウンロードボタンを追加 -->
+    <div class="btn-group">
+      <button id="dlLogTxtBtn">字幕をTXTで保存</button>
+      <button id="dlLogMdBtn">字幕をMarkdownで保存</button>
+    </div>
     <div id="logContainer"></div>
     <div id="interimBox" class="interim"></div>
   </div>
@@ -196,26 +201,9 @@
       }
     });
 
-    // 6. ダウンロード機能
-    function downloadSummary(format) {
-      if (!currentSummaryText) {
-        alert('保存できる要約データがありません。');
-        return;
-      }
-
-      const now = new Date();
-      const datePrefix = now.toISOString().split('T')[0];
-      const fileName = `会議要約_${datePrefix}.${format}`;
-      
-      let fileContent = currentSummaryText;
-      let mimeType = 'text/plain';
-
-      if (format === 'md') {
-        fileContent = `# 会議要約レポート (${datePrefix})\n\n${currentSummaryText}\n\n---\n*自動生成日時: ${now.toLocaleString('ja-JP')}*`;
-        mimeType = 'text/markdown';
-      }
-
-      const blob = new Blob([fileContent], { type: `${mimeType};charset=utf-8;` });
+    // 共通のファイルダウンロード関数
+    function downloadFile(content, fileName, mimeType) {
+      const blob = new Blob([content], { type: `${mimeType};charset=utf-8;` });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -226,6 +214,50 @@
       URL.revokeObjectURL(url);
     }
 
+    // 6. 字幕ログの保存処理
+    function downloadLog(format) {
+      const items = Array.from(logContainer.querySelectorAll('.log-item'));
+      if (items.length === 0) {
+        alert('保存できる字幕ログがありません。');
+        return;
+      }
+
+      const now = new Date();
+      const datePrefix = now.toISOString().split('T')[0];
+      const logTexts = items.map(el => el.innerText);
+
+      if (format === 'txt') {
+        const textContent = logTexts.join('\n');
+        downloadFile(textContent, `会議字幕ログ_${datePrefix}.txt`, 'text/plain');
+      } else if (format === 'md') {
+        const mdContent = `# 会議字幕ログ (${datePrefix})\n\n` + 
+                          logTexts.map(t => `- ${t}`).join('\n') + 
+                          `\n\n---\n*出力日時: ${now.toLocaleString('ja-JP')}*`;
+        downloadFile(mdContent, `会議字幕ログ_${datePrefix}.md`, 'text/markdown');
+      }
+    }
+
+    // 7. 要約の保存処理
+    function downloadSummary(format) {
+      if (!currentSummaryText) {
+        alert('保存できる要約データがありません。');
+        return;
+      }
+
+      const now = new Date();
+      const datePrefix = now.toISOString().split('T')[0];
+
+      if (format === 'txt') {
+        downloadFile(currentSummaryText, `会議要約_${datePrefix}.txt`, 'text/plain');
+      } else if (format === 'md') {
+        const mdContent = `# 会議要約レポート (${datePrefix})\n\n${currentSummaryText}\n\n---\n*自動生成日時: ${now.toLocaleString('ja-JP')}*`;
+        downloadFile(mdContent, `会議要約_${datePrefix}.md`, 'text/markdown');
+      }
+    }
+
+    // イベントリスナーの登録
+    document.getElementById('dlLogTxtBtn').addEventListener('click', () => downloadLog('txt'));
+    document.getElementById('dlLogMdBtn').addEventListener('click', () => downloadLog('md'));
     document.getElementById('dlTxtBtn').addEventListener('click', () => downloadSummary('txt'));
     document.getElementById('dlMdBtn').addEventListener('click', () => downloadSummary('md'));
   </script>
