@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>リアルタイム字幕 & 自動要約 送信画面（放置運用版）</title>
+  <title>リアルタイム字幕 & 自動要約 送信画面</title>
   <style>
     body { font-family: sans-serif; padding: 20px; background: #1e1e1e; color: #fff; max-width: 900px; margin: 0 auto; }
     h2 { margin-bottom: 10px; border-bottom: 2px solid #444; padding-bottom: 8px; }
@@ -13,7 +13,16 @@
     label { font-size: 0.9rem; color: #ccc; font-weight: bold; }
     select { padding: 6px 12px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 0.9rem; }
     
-    .status { margin-top: 10px; font-weight: bold; font-size: 0.95rem; }
+    button { padding: 10px 18px; font-size: 0.95rem; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; margin-right: 8px; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #startBtn { background: #00c853; color: #fff; }
+    #startBtn:hover:not(:disabled) { background: #00e676; }
+    #stopBtn { background: #d50000; color: #fff; }
+    #stopBtn:hover:not(:disabled) { background: #ff1744; }
+    #clearBtn { background: #616161; color: #fff; }
+    #clearBtn:hover:not(:disabled) { background: #757575; }
+
+    .status { margin-top: 12px; font-weight: bold; font-size: 0.95rem; }
     .preview { margin-top: 15px; padding: 12px; border: 1px solid #444; background: #2b2b2b; min-height: 60px; border-radius: 6px; line-height: 1.6; word-break: break-all; }
     .interim { color: #888; font-style: italic; }
     .final { color: #00e676; font-weight: bold; }
@@ -23,7 +32,7 @@
 </head>
 <body>
 
-  <h2>音声認識 & 全自動要約 送信画面</h2>
+  <h2>音声認識 & 自動要約 送信画面</h2>
 
   <div class="control-panel">
     <div class="setting-group">
@@ -34,10 +43,16 @@
       </select>
     </div>
 
-    <div class="status">ステータス: <span id="status" style="color: #00e676;">自動認識・定期要約モード起動中</span></div>
+    <div>
+      <button id="startBtn">認識＆送信開始</button>
+      <button id="stopBtn" disabled>停止</button>
+      <button id="clearBtn">ログ消去</button>
+    </div>
+
+    <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
   </div>
 
-  <div class="preview" id="previewArea">音声入力を待機しています...</div>
+  <div class="preview" id="previewArea">ここに認識された字幕が表示されます...</div>
   <div class="error-log" id="errorLog"></div>
 
   <script type="module">
@@ -75,21 +90,26 @@
       showError("Firebase初期化失敗: " + e.message);
     }
 
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const clearBtn = document.getElementById('clearBtn');
     const engineSelect = document.getElementById('engineSelect');
     const statusEl = document.getElementById('status');
     const previewArea = document.getElementById('previewArea');
 
     let recognition = null;
+    let isExplicitlyStopped = false;
     let lastSentFinalText = '';
     let isSummarizing = false;
 
-    // 自動要約の消費制御パラメータ（1日20回の上限を守るための安全装置）
+    // 自動要約の消費制御用パラメータ
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
-    const SUMMARY_INTERVAL_MS = 10 * 60 * 1000; // 10分ごとにチェック (1回の会議で2〜3回程度の消費)
-    const MIN_CHAR_DIFF = 100; // 前回の要約から最低100文字以上増えていないと実行しない
+    // 有料枠運用の場合は間隔を短く（例: 1分＝ 1 * 60 * 1000）、無料枠運用の場合は長く（例: 20分＝ 20 * 60 * 1000）変更可能です
+    const SUMMARY_INTERVAL_MS = 20 * 60 * 1000; 
+    const MIN_CHAR_DIFF = 50; 
 
-    // ブラウザ判別
+    // ブラウザ判別による初期判定
     const userAgent = navigator.userAgent.toLowerCase();
     if (userAgent.includes('edg/')) {
       engineSelect.value = 'edge';
@@ -107,7 +127,7 @@
     }
 
     // ==========================================
-    // 1. 字幕送信処理 (Gemini API は不使用 / API消費0)
+    // 1. 字幕送信処理 (Gemini API は不使用)
     // ==========================================
     async function processAndSend(text, isInterim = false) {
       let processedText = text ? text.trim() : '';
@@ -152,7 +172,7 @@
     }
 
     // ==========================================
-    // 2. 音声認識（自動再接続で常時稼働）
+    // 2. 音声認識（手動ON/OFF & 自動復旧機能付き）
     // ==========================================
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -160,133 +180,3 @@
       recognition.lang = 'ja-JP';
       recognition.continuous = true;
       recognition.interimResults = true;
-
-      recognition.onstart = () => { 
-        statusEl.textContent = '常時認識中（字幕API不使用 / 10分周期自動要約）'; 
-        statusEl.style.color = '#00e676';
-        clearError();
-      };
-
-      // 切断されても自動的に再スタートする放置向け制御
-      recognition.onend = () => { 
-        try { recognition.start(); } catch(e){}
-      };
-
-      recognition.onresult = (event) => {
-        let interimText = '';
-        let finalText = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const res = event.results[i];
-          if (res.isFinal) {
-            finalText += res[0].transcript;
-          } else {
-            interimText += res[0].transcript;
-          }
-        }
-
-        if (finalText !== '') {
-          processAndSend(finalText, false);
-        } else if (interimText !== '') {
-          processAndSend(interimText, true);
-        }
-      };
-
-      // ページ読み込み完了と同時に音声認識スタート
-      try {
-        recognition.start();
-      } catch(e) {
-        showError("認識開始エラー: " + e.message);
-      }
-
-    } else {
-      showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
-    }
-
-    // ==========================================
-    // 3. バックグラウンド自動要約処理 (API上限保護機能付き)
-    // ==========================================
-    async function autoGenerateSummary() {
-      if (isSummarizing || !db) return;
-
-      const now = Date.now();
-      
-      try {
-        const listRef = ref(db, 'transcripts/list');
-        const snapshot = await get(listRef);
-        
-        if (!snapshot.exists()) return;
-
-        const data = snapshot.val();
-        const logs = Object.values(data).map(item => item.content);
-        let fullText = logs.join('\n');
-        const totalCharCount = fullText.trim().length;
-
-        // 【安全ガード】文字数増加が少なすぎる場合、または前回の要約から時間が経っていない場合はスキップ
-        if (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF) return;
-
-        if (fullText.length > 4000) {
-          fullText = fullText.slice(-4000);
-        }
-
-        isSummarizing = true;
-        console.log('バックグラウンド自動要約を呼び出し中...');
-
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: `以下は進行中の会議・対話のログです。これまでの全体内容を整理し、主要な話題、決定事項、重要なポイントを箇条書きで簡潔に要約してください。\n\n【文字起こし】\n${fullText}`
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`API接続エラー: HTTP ${response.status}`);
-        }
-
-        const resData = await response.json();
-
-        if (resData.error) {
-          const detailMsg = typeof resData.error === 'object' 
-            ? (resData.error.message || JSON.stringify(resData.error)) 
-            : resData.error;
-          throw new Error(`Gemini APIエラー: ${detailMsg}`);
-        }
-
-        const summaryResult = (
-          resData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          resData.text ||
-          resData.content ||
-          resData.message ||
-          (typeof resData === 'string' ? resData : '')
-        ).trim();
-
-        if (summaryResult) {
-          await set(ref(db, 'transcripts/summary'), {
-            text: summaryResult,
-            updatedAt: Date.now()
-          });
-
-          lastSummaryTime = now;
-          lastSummaryCharLength = totalCharCount;
-          console.log('自動要約の更新に成功しました。');
-        }
-
-      } catch (err) {
-        showError("自動要約エラー: " + err.message);
-      } finally {
-        isSummarizing = false;
-      }
-    }
-
-    // 1分ごとにタイマーチェックを実行（実際のAPI実行は 10分間隔 ＆ 発言追加時のみ）
-    setInterval(() => {
-      const now = Date.now();
-      if (now - lastSummaryTime >= SUMMARY_INTERVAL_MS) {
-        autoGenerateSummary();
-      }
-    }, 60 * 1000);
-
-  </script>
-</body>
-</html>
