@@ -41,6 +41,14 @@
       font-size: 0.95rem;
       word-break: break-word;
     }
+
+    /* タイムスタンプのデザイン */
+    .timestamp {
+      color: #00e676; /* サブカラーのグリーンで強調 */
+      font-size: 0.85rem;
+      font-family: monospace;
+      margin-right: 8px;
+    }
     
     /* 発話中の途中経過エリア */
     .interim {
@@ -112,7 +120,6 @@
   <!-- 左側：リアルタイム字幕表示エリア -->
   <div id="left-panel">
     <h2>リアルタイム字幕</h2>
-    <!-- 字幕用のダウンロードボタンを追加 -->
     <div class="btn-group">
       <button id="dlLogTxtBtn">字幕をTXTで保存</button>
       <button id="dlLogMdBtn">字幕をMarkdownで保存</button>
@@ -149,14 +156,20 @@
     const summaryBox = document.getElementById('summaryBox');
     const updateTime = document.getElementById('updateTime');
 
-    // 2. 確定ログ (transcripts/list) の取得
+    // 2. 確定ログ (transcripts/list) の取得（日時表示追加）
     const listRef = ref(db, 'transcripts/list');
     onChildAdded(listRef, (snapshot) => {
       const data = snapshot.val();
       if (data && data.content) {
         const div = document.createElement('div');
         div.className = 'log-item';
-        div.innerText = data.content;
+        
+        // タイムスタンプの取得（timestamp, createdAt, time等のキーに対応。無い場合は現在時刻）
+        const rawTime = data.timestamp || data.createdAt || data.time;
+        const timeObj = rawTime ? new Date(rawTime) : new Date();
+        const timeStr = timeObj.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        div.innerHTML = `<span class="timestamp">[${timeStr}]</span>${data.content}`;
         logContainer.appendChild(div);
         
         // 常に最新メッセージが見えるように自動スクロール
@@ -214,7 +227,7 @@
       URL.revokeObjectURL(url);
     }
 
-    // 6. 字幕ログの保存処理
+    // 6. 字幕ログの保存処理（日時も一緒に保存）
     function downloadLog(format) {
       const items = Array.from(logContainer.querySelectorAll('.log-item'));
       if (items.length === 0) {
