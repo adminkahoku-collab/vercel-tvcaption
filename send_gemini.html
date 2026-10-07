@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>リアルタイム字幕 Sender (Gemini補正モード)</title>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, set, push, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    // ★ 1. Firebase 設定
+    const firebaseConfig = {
+      databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // ★ 2. Gemini API キー設定
+    const GEMINI_API_KEY = "AQ.Ab8RN6JUGUbGQ7RkO7VKMwNiQsKuJdvQOrpzeJDRFLq-MDm3hA";
+
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const statusEl = document.getElementById('status');
+    const previewArea = document.getElementById('previewArea');
+
+    let recognition;
+    let isExplicitlyStopped = false;
+    let interimTimer = null;
+    let forceFinalTimer = null;
+    let lastInterimText = '';
+    let lastSentFinalText = '';
+
+    // Gemini API を呼び出して誤変換・文章校正を行う関数
+    async function correctTextWithGemini(text) {
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY") {
+        console.warn("Gemini APIキーが設定されていないため、原本のまま送信します。");
+        return text;
+      }
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+      
+      const prompt = `以下の文章は音声認識によって入力されたテキストです。
+文脈に合わせた正しい漢字・ひらがな（例：予算書の「款」「項」「目」、数字や単位）に補正し、自然な日本語に修正してください。
+余計な解説や挨拶は含めず、**修正後の文章のみ**を出力してください。
+
+音声テキスト：${text}`;
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`API Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const correctedText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        return correctedText || text;
+      } catch (error) {
+        console.error("Gemini API 補正エラー:", error);
+        return text; // エラー時は補正前のテキストをバックアップとして返す
+      }
+    }
+
+    // Firebase への送信処理（Gemini補正対応）
+    async function sendToFirebase(text, isInterim = false) {
+      const trimmedText = text ? text.trim() : '';
+      if (!trimmedText) return;
+
+      if (isInterim) {
+        // 仮テキスト送信（ノード上書き・補正なしで高速表示）
+        const interimRef = ref(db, 'transcripts/interim');
+        await set(interimRef, {
+          content: trimmedText,
+          timestamp: Date.now()
+        });
+        updatePreview(`[認識中] ${trimmedText}`, true);
+      } else {
+        // 直前と同じ確定テキストならスキップ（重複防止）
+        if (trimmedText === lastSentFinalText) {
+          await remove(ref(db, 'transcripts/interim'));
+          return;
+        }
+
+        lastSentFinalText = trimmedText;
+        await remove(ref(db, 'transcripts/interim'));
+
+        // 確定時はGeminiで補正を実行
+        updatePreview(`[AI補正中...] ${trimmedText}`, true);
+        const finalText = await correctTextWithGemini(trimmedText);
+
+        // 補正後の確定テキストを送信
+        const listRef = ref(db, 'transcripts/list');
+        await push(listRef, {
+          content: finalText,
+          timestamp: Date.now()
+        });
+        updatePreview(`[確定] ${finalText}`, false);
+      }
+    }
+
+    // プレビュー表示更新
+    function updatePreview(msg, isInterim) {
+      previewArea.textContent = msg;
+      previewArea.style.color = isInterim ? '#888' : '#fff';
+    }
+
+    // 音声認識（Web Speech API）初期化
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.lang = 'ja-JP';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onstart = () => { 
+        statusEl.textContent = '認識中（Gemini補正モード）'; 
+        statusEl.style.color = '#00e676';
+      };
+      
+      recognition.onend = () => { 
+        if (lastInterimText.trim() !== '') {
+          sendToFirebase(lastInterimText, false);
+          lastInterimText = '';
+        }
+        
+        if (!isExplicitlyStopped) {
+          recognition.start();
+        } else {
+          statusEl.textContent = '停止中';
+          statusEl.style.color = '#ff5252';
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let interimText = '';
+        let currentFinal = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            currentFinal += event.results[i][0].transcript;
+          } else {
+            interimText += event.results[i][0].transcript;
+          }
+        }
+
+        clearTimeout(interimTimer);
+        clearTimeout(forceFinalTimer);
+
+        if (currentFinal !== '') {
+          lastInterimText = '';
+          sendToFirebase(currentFinal, false);
+        } else if (interimText !== '') {
+          lastInterimText = interimText;
+          
+          interimTimer = setTimeout(() => {
+            sendToFirebase(interimText, true);
+          }, 300);
+
+          forceFinalTimer = setTimeout(() => {
+            if (lastInterimText.trim() !== '') {
+              sendToFirebase(lastInterimText, false);
+              lastInterimText = '';
+            }
+          }, 2500);
+        }
+      };
+    } else {
+      alert('お使いのブラウザは Web Speech API に対応していません。Chrome ブラウザをご使用ください。');
+    }
+
+    // ボタンイベント
+    startBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      isExplicitlyStopped = false;
+      lastSentFinalText = '';
+      recognition.start();
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      isExplicitlyStopped = true;
+      clearTimeout(interimTimer);
+      clearTimeout(forceFinalTimer);
+      
+      if (lastInterimText.trim() !== '') {
+        sendToFirebase(lastInterimText, false);
+        lastInterimText = '';
+      }
+
+      recognition.stop();
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    });
+
+    // ログ消去ボタン
+    clearBtn.addEventListener('click', async () => {
+      if (confirm('画面に表示されているすべての字幕ログを削除しますか？')) {
+        try {
+          const rootRef = ref(db, 'transcripts');
+          await remove(rootRef);
+          
+          lastInterimText = '';
+          lastSentFinalText = '';
+          previewArea.textContent = 'ログをクリアしました。';
+          previewArea.style.color = '#888';
+          
+          alert('ログを全消去しました。');
+        } catch (error) {
+          console.error('消去エラー:', error);
+          alert('消去に失敗しました。Firebaseのルール設定を確認してください。');
+        }
+      }
+    });
+  </script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #222; color: #fff; }
+    button { padding: 10px 20px; font-size: 1rem; margin-right: 10px; cursor: pointer; }
+    .status { margin-top: 15px; font-weight: bold; }
+    .preview { margin-top: 20px; padding: 10px; border: 1px solid #555; background: #333; min-height: 50px; }
+  </style>
+</head>
+<body>
+
+  <h2>音声認識 送信画面 (Gemini AI補正モード)</h2>
+
+  <div>
+    <button id="startBtn">認識＆送信開始</button>
+    <button id="stopBtn" disabled>停止</button>
+    <button id="clearBtn">ログ消去</button>
+  </div>
+
+  <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
+
+  <div class="preview" id="previewArea">ここに認識されたテキストが表示されます...</div>
+
+</body>
+</html>

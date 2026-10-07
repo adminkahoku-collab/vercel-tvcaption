@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>リアルタイム字幕 & 会議要約 Display</title>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, onChildAdded, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    // ★ 1. Firebase Realtime Database の URL を設定してください
+    const firebaseConfig = {
+      databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app" 
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // ★ 2. Google AI Studio で取得した Gemini API Key を設定してください
+    const GEMINI_API_KEY = 'AQ.Ab8RN6JUGUbGQ7RkO7VKMwNiQsKuJdvQOrpzeJDRFLq-MDm3hA';
+
+    const captionContainer = document.getElementById('caption-container');
+    const summaryContainer = document.getElementById('summary-container');
+    const summaryStatus = document.getElementById('summary-status');
+    const downloadTxtBtn = document.getElementById('downloadTxtBtn');
+    const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+
+    let allTranscripts = [];
+    let lastSummaryCount = 0;
+
+    // 1. Gemini API による「質問・回答・決算書キーワード」対応要約抽出
+    async function generateSummary() {
+      if (allTranscripts.length === 0) return;
+
+      if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('YOUR_GEMINI')) {
+        summaryStatus.textContent = '🔑 GEMINI_API_KEY 未設定';
+        return;
+      }
+
+      summaryStatus.textContent = '🔄 要点を自動抽出中...';
+
+      // 直近 50 件の発言データのみを抽出（6時間運用の負荷低減対策）
+      const recentTranscripts = allTranscripts.slice(-50);
+      const fullText = recentTranscripts.map(t => t.content).join('\n');
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+      
+      const prompt = `あなたは議会や事業説明会、予算決算委員会の優秀な書記です。
+以下の発言ログ（直近の内容）を読み取り、質疑応答の流れ（質問→回答→再質問）と、参照されている資料の位置（ページ数、予算書・決算書の「款・項・目」など）を明確に整理してください。
+
+【出力要件】
+1. 発言内で言及された「資料〇〇ページ」「〇〇款 〇〇項 〇〇目」などの参照場所や単位・金額等のキーワードは絶対に省略せず、そのまま記載してください。
+2. 質疑応答の流れ（誰が何を聞き、どう答えたか、再質問・結論はどうなったか）が分かるように整理してください。
+3. 箇条書き（• マーク）で3〜6項目程度の簡潔な文章で出力してください。
+
+【制約事項】
+- 前置きや挨拶（「以下が要約です」など）は一切出力せず、箇条書きテキストのみを出力してください。
+
+【発言ログ】
+${fullText}`;
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        if (!response.ok) throw new Error('API Error');
+
+        const data = await response.json();
+        const resultText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+        // 有効な要約テキストが得られた場合のみ画面を更新（消失防止）
+        if (resultText && resultText.length > 0) {
+          const formattedLines = resultText
+            .split('\n')
+            .filter(line => line.trim() !== '')
+            .map(line => `<li>${line.replace(/^[•\-\*]\s*/, '')}</li>`)
+            .join('');
+
+          summaryContainer.innerHTML = `<ul class="summary-list">${formattedLines}</ul>`;
+          summaryStatus.textContent = `自動更新: ${new Date().toLocaleTimeString('ja-JP')}`;
+        } else {
+          summaryStatus.textContent = '自動更新: 前回の要約を保持';
+        }
+      } catch (e) {
+        console.error('要約エラー:', e);
+        summaryStatus.textContent = '自動更新: 前回の要約を保持';
+      }
+    }
+
+    // 2. 確定字幕データのリアルタイム受信
+    const listRef = ref(db, 'transcripts/list');
+    onChildAdded(listRef, (snapshot) => {
+      const data = snapshot.val();
+      allTranscripts.push(data);
+
+      const interimEl = document.getElementById('interim-caption');
+      if (interimEl) interimEl.remove();
+
+      const timeStr = new Date(data.timestamp).toLocaleTimeString('ja-JP');
+      const item = document.createElement('div');
+      item.className = 'caption-item';
+      item.innerHTML = `<span class="time">[${timeStr}]</span> <span class="text">${data.content}</span>`;
+      
+      captionContainer.appendChild(item);
+      captionContainer.scrollTop = captionContainer.scrollHeight;
+
+      // ★ 発言が 5 件増えるごとに全自動で要約を更新
+      if (allTranscripts.length - lastSummaryCount >= 5) {
+        lastSummaryCount = allTranscripts.length;
+        generateSummary();
+      }
+    });
+
+    // 3. 認識中（仮テキスト）のリアルタイム受信（グレー表示）
+    const interimRef = ref(db, 'transcripts/interim');
+    onValue(interimRef, (snapshot) => {
+      const data = snapshot.val();
+      let interimEl = document.getElementById('interim-caption');
+      
+      if (data && data.content) {
+        if (!interimEl) {
+          interimEl = document.createElement('div');
+          interimEl.id = 'interim-caption';
+          interimEl.className = 'caption-item interim';
+          captionContainer.appendChild(interimEl);
+        }
+        const timeStr = new Date(data.timestamp).toLocaleTimeString('ja-JP');
+        interimEl.innerHTML = `<span class="time">[${timeStr}]</span> <span class="text-interim">${data.content}</span>`;
+        captionContainer.scrollTop = captionContainer.scrollHeight;
+      } else {
+        if (interimEl) interimEl.remove();
+      }
+    });
+
+    // 4. クリア操作のリアルタイム検知（ログ消去時）
+    const rootTranscriptsRef = ref(db, 'transcripts');
+    onValue(rootTranscriptsRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        allTranscripts = [];
+        lastSummaryCount = 0;
+        captionContainer.innerHTML = '';
+        summaryContainer.innerHTML = '<p style="color: #666;">ここに質疑応答の要点や参照資料ページ・款項目が表示されます。</p>';
+        summaryStatus.textContent = '';
+      }
+    });
+
+    // 5. TXT ダウンロード
+    downloadTxtBtn.addEventListener('click', () => {
+      if (allTranscripts.length === 0) return alert('ダウンロードするデータがありません。');
+      let txtContent = "【リアルタイム文字起こしログ】\n\n";
+      allTranscripts.forEach(item => {
+        const time = new Date(item.timestamp).toLocaleTimeString('ja-JP');
+        txtContent += `[${time}] ${item.content}\n`;
+      });
+      const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
+      triggerDownload(blob, `字幕文字起こし_${getFormattedDate()}.txt`);
+    });
+
+    // 6. CSV ダウンロード
+    downloadCsvBtn.addEventListener('click', () => {
+      if (allTranscripts.length === 0) return alert('ダウンロードするデータがありません。');
+      let csvContent = "\uFEFF日時,発言内容\n";
+      allTranscripts.forEach(item => {
+        const time = new Date(item.timestamp).toLocaleString('ja-JP');
+        const safeContent = `"${item.content.replace(/"/g, '""')}"`;
+        csvContent += `"${time}",${safeContent}\n`;
+      });
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      triggerDownload(blob, `字幕文字起こし_${getFormattedDate()}.csv`);
+    });
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function getFormattedDate() {
+      const d = new Date();
+      return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; padding: 20px; background: #0a0a0a; color: #fff; margin: 0; }
+    
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .btn-group { display: flex; gap: 10px; }
+    button { padding: 8px 16px; font-size: 0.9rem; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; background: #29b6f6; color: #000; }
+    button:hover { background: #81d4fa; }
+
+    /* レイアウト（左 2/3 : 右 1/3） */
+    .main-layout {
+      display: flex;
+      gap: 20px;
+      height: calc(100vh - 100px);
+    }
+
+    .left-panel {
+      flex: 2;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .right-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #333;
+      padding: 20px;
+      background: #141414;
+      border-radius: 8px;
+      overflow-y: auto;
+    }
+
+    #caption-container {
+      border: 1px solid #333;
+      padding: 20px;
+      height: 100%;
+      overflow-y: auto;
+      background: #141414;
+      border-radius: 8px;
+    }
+
+    .caption-item { margin-bottom: 12px; font-size: 1.2rem; line-height: 1.5; }
+    .time { color: #888; font-size: 0.9rem; margin-right: 8px; }
+    .text { color: #ffffff; }
+    .text-interim { color: #757575; font-style: italic; }
+
+    /* 要約領域のデザイン */
+    .panel-header { border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 15px; }
+    .panel-title { margin: 0; color: #4fc3f7; font-size: 1.2rem; }
+    #summary-status { font-size: 0.8rem; color: #888; margin-top: 5px; }
+    
+    .summary-list { padding-left: 20px; margin: 0; }
+    .summary-list li { margin-bottom: 14px; font-size: 1.05rem; line-height: 1.6; color: #e0e0e0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>📺 リアルタイム字幕 Display</h2>
+    <div class="btn-group">
+      <button id="downloadTxtBtn">📥 .txt で保存</button>
+      <button id="downloadCsvBtn">📊 .csv で保存</button>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <!-- 左側 2/3：字幕ログエリア -->
+    <div class="left-panel">
+      <div id="caption-container"></div>
+    </div>
+
+    <!-- 右側 1/3：要約・要点エリア -->
+    <div class="right-panel">
+      <div class="panel-header">
+        <h3 class="panel-title">📝 質疑応答・要点（資料・予算科目）</h3>
+        <div id="summary-status"></div>
+      </div>
+      <div id="summary-container">
+        <p style="color: #666;">ここに質疑応答の要点や参照資料ページ・款項目が表示されます。</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
