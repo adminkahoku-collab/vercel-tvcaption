@@ -35,11 +35,11 @@
     .container {
       display: flex;
       gap: 20px;
-      height: calc(100vh - 60px);
+      height: calc(100vh - 40px);
     }
 
+    /* カラムの基本構成 */
     .column {
-      flex: 1;
       display: flex;
       flex-direction: column;
       background: #1e1e1e;
@@ -48,6 +48,15 @@
       border: 1px solid #333;
       box-sizing: border-box;
       overflow: hidden;
+    }
+
+    /* 左右の比率設定 (字幕 7 : 要約 3) */
+    .col-caption {
+      flex: 7; /* 左側（字幕）の幅を広めに確保 */
+    }
+
+    .col-summary {
+      flex: 3; /* 右側（要約）の幅 */
     }
 
     /* リアルタイム字幕用エリア */
@@ -100,15 +109,15 @@
 <body>
 
   <div class="container">
-    <!-- 左側：リアルタイム字幕 -->
-    <div class="column">
+    <!-- 左側：リアルタイム字幕 (幅 70%) -->
+    <div class="column col-caption">
       <h2>リアルタイム字幕</h2>
       <div id="interimArea">[認識中...]</div>
       <div id="listArea">字幕ログを待機中...</div>
     </div>
 
-    <!-- 右側：AI要約 -->
-    <div class="column">
+    <!-- 右側：AI要約 (幅 30%) -->
+    <div class="column col-summary">
       <h2>
         <span>会議のAI要約</span>
         <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
@@ -139,11 +148,9 @@
     onValue(ref(db, 'transcripts/summary'), (snapshot) => {
       const data = snapshot.val();
       if (data && data.text) {
-        // 間隔（分）の設定があれば「（※〇分間隔で表示）」と自動書き換え
         const mins = data.intervalMinutes || 20;
         intervalBadge.textContent = `（※${mins}分間隔で表示）`;
 
-        // 不要な「###」や「**」を画面表示時にも除去する安全フィルター
         let cleanText = data.text
           .replace(/^###\s*/gm, '')
           .replace(/\*\*/g, '');
