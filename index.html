@@ -3,15 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <title>リアルタイム字幕・AI要約閲覧</title>
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
   <style>
     body { display: flex; font-family: sans-serif; margin: 0; padding: 10px; height: 100vh; box-sizing: border-box; }
     #left-panel { flex: 2; padding-right: 15px; border-right: 2px solid #ccc; overflow-y: auto; }
     #right-panel { flex: 1; padding-left: 15px; overflow-y: auto; background-color: #f9f9f9; }
     .log-item { margin-bottom: 8px; border-bottom: 1px dashed #eee; padding-bottom: 4px; }
-    .interim { color: #888; italic: true; }
+    .interim { color: #888; font-style: italic; }
     #summaryBox { white-space: pre-wrap; background: #fff; padding: 10px; border: 1px solid #ddd; border-radius: 4px; min-height: 200px; }
     .btn-group { margin-bottom: 10px; }
     button { padding: 6px 12px; margin-right: 5px; cursor: pointer; }
@@ -30,46 +27,60 @@
   <div id="right-panel">
     <h2>会議のAI要約</h2>
     <div class="btn-group">
-      <button onclick="downloadSummary('txt')">要約をTXTで保存</button>
-      <button onclick="downloadSummary('md')">要約をMarkdownで保存</button>
+      <button id="dlTxtBtn">要約をTXTで保存</button>
+      <button id="dlMdBtn">要約をMarkdownで保存</button>
     </div>
     <div id="summaryBox">要約を待機中...</div>
     <p style="font-size:12px; color:#666;" id="updateTime"></p>
   </div>
 
-  <script>
-    // --------------------------------------------------
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, onChildAdded, onValue, onChildRemoved } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
     // 1. Firebase 初期化
-    // --------------------------------------------------
     const firebaseConfig = {
-      databaseURL: "https://<YOUR-FIREBASE-APP>.firebaseio.com"
+      databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
     };
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
-    }
-    const db = firebase.database();
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
 
-    let currentSummaryText = ""; // ダウンロード用グローバル変数
-
-    // --------------------------------------------------
-    // 2. 文字起こし（確定ログ）の受信監視
-    // --------------------------------------------------
+    let currentSummaryText = "";
     const logContainer = document.getElementById('logContainer');
-    
-    db.ref('transcripts/list').on('child_added', (snapshot) => {
+    const interimBox = document.getElementById('interimBox');
+    const summaryBox = document.getElementById('summaryBox');
+    const updateTime = document.getElementById('updateTime');
+
+    // 2. 確定ログ (transcripts/list) のリアルタイム受信
+    const listRef = ref(db, 'transcripts/list');
+    onChildAdded(listRef, (snapshot) => {
       const data = snapshot.val();
-      const div = document.createElement('div');
-      div.className = 'log-item';
-      div.innerText = data.content;
-      logContainer.appendChild(div);
-      // 自動最下部スクロール
-      document.getElementById('left-panel').scrollTop = document.getElementById('left-panel').scrollHeight;
+      if (data && data.content) {
+        const div = document.createElement('div');
+        div.className = 'log-item';
+        div.innerText = data.content;
+        logContainer.appendChild(div);
+        
+        // 自動スクロール
+        const leftPanel = document.getElementById('left-panel');
+        leftPanel.scrollTop = leftPanel.scrollHeight;
+      }
     });
 
-    // 途中経過（interim）の受信監視
-    db.ref('transcripts/interim').on('value', (snapshot) => {
+    // ログが消去された場合に画面をクリアする処理
+    const rootRef = ref(db, 'transcripts');
+    onChildRemoved(rootRef, () => {
+      logContainer.innerHTML = '';
+      interimBox.innerText = '';
+      summaryBox.innerText = '要約データはまだありません。';
+      updateTime.innerText = '';
+      currentSummaryText = '';
+    });
+
+    // 3. 途中経過 (transcripts/interim) のリアルタイム受信
+    const interimRef = ref(db, 'transcripts/interim');
+    onValue(interimRef, (snapshot) => {
       const data = snapshot.val();
-      const interimBox = document.getElementById('interimBox');
       if (data && data.content) {
         interimBox.innerText = `[発話中...] ${data.content}`;
       } else {
@@ -77,27 +88,24 @@
       }
     });
 
-    // --------------------------------------------------
-    // 3. 要約データ (transcripts/summary) のリアルタイム受信
-    // --------------------------------------------------
-    db.ref('transcripts/summary').on('value', (snapshot) => {
+    // 4. 要約データ (transcripts/summary) のリアルタイム受信
+    const summaryRef = ref(db, 'transcripts/summary');
+    onValue(summaryRef, (snapshot) => {
       const data = snapshot.val();
       if (data && data.text) {
         currentSummaryText = data.text;
-        document.getElementById('summaryBox').innerText = data.text;
+        summaryBox.innerText = data.text;
         
         const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
-        document.getElementById('updateTime').innerText = `最終要約更新: ${dateStr}`;
+        updateTime.innerText = `最終要約更新: ${dateStr}`;
       } else {
-        document.getElementById('summaryBox').innerText = '要約データはまだありません。';
-        document.getElementById('updateTime').innerText = '';
+        summaryBox.innerText = '要約データはまだありません。';
+        updateTime.innerText = '';
         currentSummaryText = "";
       }
     });
 
-    // --------------------------------------------------
-    // 4. 要約データのダウンロード機能
-    // --------------------------------------------------
+    // 5. ダウンロード機能
     function downloadSummary(format) {
       if (!currentSummaryText) {
         alert('保存できる要約データがありません。');
@@ -105,7 +113,7 @@
       }
 
       const now = new Date();
-      const datePrefix = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const datePrefix = now.toISOString().split('T')[0];
       const fileName = `会議要約_${datePrefix}.${format}`;
       
       let fileContent = currentSummaryText;
@@ -126,6 +134,9 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     }
+
+    document.getElementById('dlTxtBtn').addEventListener('click', () => downloadSummary('txt'));
+    document.getElementById('dlMdBtn').addEventListener('click', () => downloadSummary('md'));
   </script>
 </body>
 </html>
