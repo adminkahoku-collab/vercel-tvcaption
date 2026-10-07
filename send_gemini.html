@@ -2,244 +2,179 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>リアルタイム字幕 Sender (Gemini補正モード)</title>
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, set, push, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+  <title>音声入力・AI補正＆非同期要約送信</title>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body>
+  <h2>音声入力 (AI補正＆非同期要約モード)</h2>
+  <button id="startBtn" onclick="startRecognition()">認識＆送信開始</button>
+  <button id="stopBtn" onclick="stopRecognition()" disabled>停止</button>
+  <button onclick="clearLogs()">ログ消去</button>
+  <p>ステータス: <span id="status">停止中</span></p>
 
-    // ★ 1. Firebase 設定
+  <script>
+    // --------------------------------------------------
+    // 1. Firebase 初期化設定 (ご自身の環境設定に合わせてください)
+    // --------------------------------------------------
     const firebaseConfig = {
-      databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
+      databaseURL: "https://<YOUR-FIREBASE-APP>.firebaseio.com"
     };
-    const app = initializeApp(firebaseConfig);
-    const db = getDatabase(app);
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.database();
 
-    // ★ 2. Gemini API キー設定
-    const GEMINI_API_KEY = "AQ.Ab8RN6JUGUbGQ7RkO7VKMwNiQsKuJdvQOrpzeJDRFLq-MDm3hA";
+    // --------------------------------------------------
+    // 2. 設定値・状態変数 (APIキー変数は削除しました)
+    // --------------------------------------------------
+    const SUMMARY_INTERVAL_MS = 60000; // API制限保護: 要約実行は最低60秒間隔
+    let lastSummaryTime = 0;
+    let isSummarizing = false; // 要約処理中フラグ
+    let recentLogs = []; // 要約用ログバッファ（直近のログを保持）
 
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const clearBtn = document.getElementById('clearBtn');
-    const statusEl = document.getElementById('status');
-    const previewArea = document.getElementById('previewArea');
+    // --------------------------------------------------
+    // 3. Web Speech API (音声認識) のセットアップ
+    // --------------------------------------------------
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.interimResults = true;
+    recognition.continuous = true;
 
-    let recognition;
-    let isExplicitlyStopped = false;
-    let interimTimer = null;
-    let forceFinalTimer = null;
-    let lastInterimText = '';
-    let lastSentFinalText = '';
+    let isStarted = false;
 
-    // Gemini API を呼び出して誤変換・文章校正を行う関数
-    async function correctTextWithGemini(text) {
-      if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY") {
-        console.warn("Gemini APIキーが設定されていないため、原本のまま送信します。");
-        return text;
+    recognition.onresult = async (event) => {
+      let interimTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          // --- 確定テキストの送信処理 ---
+          // ① まず原稿・補正テキストを即時送信（Vercelの /api/chat 経由で補正）
+          const correctedText = await correctTextWithGemini(transcript);
+          saveTranscript(correctedText);
+          
+          // ② 要約用バッファに追記
+          recentLogs.push(correctedText);
+          if (recentLogs.length > 50) recentLogs.shift(); // 最新50件のみ保持
+
+          // ③ 非同期要約チェック（並行処理）
+          triggerAsyncSummary();
+
+        } else {
+          interimTranscript += transcript;
+        }
       }
+      // 途中経過を interim ノードに上書き送信
+      if (interimTranscript) {
+        db.ref('transcripts/interim').set({
+          content: interimTranscript,
+          timestamp: Date.now()
+        });
+      }
+    };
 
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
-      
-      const prompt = `以下の文章は音声認識によって入力されたテキストです。
-文脈に合わせた正しい漢字・ひらがな（例：予算書の「款」「項」「目」、数字や単位）に補正し、自然な日本語に修正してください。
-余計な解説や挨拶は含めず、**修正後の文章のみ**を出力してください。
+    recognition.onend = () => {
+      if (isStarted) recognition.start(); // 自動再接続
+    };
 
-音声テキスト：${text}`;
+    function startRecognition() {
+      isStarted = true;
+      recognition.start();
+      document.getElementById('status').innerText = '認識中...';
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+    }
 
+    function stopRecognition() {
+      isStarted = false;
+      recognition.stop();
+      document.getElementById('status').innerText = '停止中';
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    }
+
+    // --------------------------------------------------
+    // 4. Firebaseへの文字起こし保存 (即時送信)
+    // --------------------------------------------------
+    function saveTranscript(text) {
+      db.ref('transcripts/list').push({
+        content: text,
+        timestamp: Date.now()
+      });
+      db.ref('transcripts/interim').remove(); // 仮ノードクリア
+    }
+
+    // --------------------------------------------------
+    // 5. Vercel API Route (/api/chat) によるテキスト校正
+    // --------------------------------------------------
+    async function correctTextWithGemini(text) {
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
+            prompt: `以下の音声認識テキストの同音異義語・誤字を修整し、自然な日本語に補正してください。余計な解説は出力せず補正結果のみ返してください。\n\n【テキスト】\n${text}`
           })
         });
-
-        if (!response.ok) {
-          throw new Error(`API Error: ${response.status}`);
-        }
-
         const data = await response.json();
-        const correctedText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        return correctedText || text;
-      } catch (error) {
-        console.error("Gemini API 補正エラー:", error);
-        return text; // エラー時は補正前のテキストをバックアップとして返す
+        return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || text;
+      } catch (err) {
+        console.warn('Vercel API Correction Error:', err);
+        return text; // エラー時は原文をそのまま返す
       }
     }
 
-    // Firebase への送信処理（Gemini補正対応）
-    async function sendToFirebase(text, isInterim = false) {
-      const trimmedText = text ? text.trim() : '';
-      if (!trimmedText) return;
+    // --------------------------------------------------
+    // 6. 非同期要約生成ロジック (タイマーガード付 & /api/chat 利用)
+    // --------------------------------------------------
+    function triggerAsyncSummary() {
+      const now = Date.now();
+      // 前回から60秒以上経過 ＆＆ 現在要約処理中でない ＆＆ ログが存在する場合のみ実行
+      if (now - lastSummaryTime >= SUMMARY_INTERVAL_MS && !isSummarizing && recentLogs.length > 0) {
+        lastSummaryTime = now;
+        isSummarizing = true;
 
-      if (isInterim) {
-        // 仮テキスト送信（ノード上書き・補正なしで高速表示）
-        const interimRef = ref(db, 'transcripts/interim');
-        await set(interimRef, {
-          content: trimmedText,
-          timestamp: Date.now()
+        // 非同期 (Promise) で実行し、文字起こし送信をブロックしない
+        generateSummaryAsync(recentLogs.slice()).finally(() => {
+          isSummarizing = false;
         });
-        updatePreview(`[認識中] ${trimmedText}`, true);
-      } else {
-        // 直前と同じ確定テキストならスキップ（重複防止）
-        if (trimmedText === lastSentFinalText) {
-          await remove(ref(db, 'transcripts/interim'));
-          return;
-        }
+      }
+    }
 
-        lastSentFinalText = trimmedText;
-        await remove(ref(db, 'transcripts/interim'));
+    async function generateSummaryAsync(logsToSummarize) {
+      const promptText = `以下は会議の直近の発言ログです。会議の要点、決定事項、主要な質疑応答（特に予算関連の「款・項・目」やページ数など）を箇条書きで簡潔に要約してください。\n\n【発言ログ】\n${logsToSummarize.join('\n')}`;
 
-        // 確定時はGeminiで補正を実行
-        updatePreview(`[AI補正中...] ${trimmedText}`, true);
-        const finalText = await correctTextWithGemini(trimmedText);
-
-        // 補正後の確定テキストを送信
-        const listRef = ref(db, 'transcripts/list');
-        await push(listRef, {
-          content: finalText,
-          timestamp: Date.now()
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: promptText })
         });
-        updatePreview(`[確定] ${finalText}`, false);
+        const data = await response.json();
+        const summaryResult = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+        if (summaryResult) {
+          // Firebase の `transcripts/summary` ノードを上書き更新
+          await db.ref('transcripts/summary').set({
+            text: summaryResult,
+            updatedAt: Date.now()
+          });
+          console.log('要約をFirebaseへ自動更新しました');
+        }
+      } catch (err) {
+        console.error('Vercel API Summary Error:', err);
       }
     }
 
-    // プレビュー表示更新
-    function updatePreview(msg, isInterim) {
-      previewArea.textContent = msg;
-      previewArea.style.color = isInterim ? '#888' : '#fff';
-    }
-
-    // 音声認識（Web Speech API）初期化
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognition = new SpeechRecognition();
-      recognition.lang = 'ja-JP';
-      recognition.continuous = true;
-      recognition.interimResults = true;
-
-      recognition.onstart = () => { 
-        statusEl.textContent = '認識中（Gemini補正モード）'; 
-        statusEl.style.color = '#00e676';
-      };
-      
-      recognition.onend = () => { 
-        if (lastInterimText.trim() !== '') {
-          sendToFirebase(lastInterimText, false);
-          lastInterimText = '';
-        }
-        
-        if (!isExplicitlyStopped) {
-          recognition.start();
-        } else {
-          statusEl.textContent = '停止中';
-          statusEl.style.color = '#ff5252';
-        }
-      };
-
-      recognition.onresult = (event) => {
-        let interimText = '';
-        let currentFinal = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            currentFinal += event.results[i][0].transcript;
-          } else {
-            interimText += event.results[i][0].transcript;
-          }
-        }
-
-        clearTimeout(interimTimer);
-        clearTimeout(forceFinalTimer);
-
-        if (currentFinal !== '') {
-          lastInterimText = '';
-          sendToFirebase(currentFinal, false);
-        } else if (interimText !== '') {
-          lastInterimText = interimText;
-          
-          interimTimer = setTimeout(() => {
-            sendToFirebase(interimText, true);
-          }, 300);
-
-          forceFinalTimer = setTimeout(() => {
-            if (lastInterimText.trim() !== '') {
-              sendToFirebase(lastInterimText, false);
-              lastInterimText = '';
-            }
-          }, 2500);
-        }
-      };
-    } else {
-      alert('お使いのブラウザは Web Speech API に対応していません。Chrome ブラウザをご使用ください。');
-    }
-
-    // ボタンイベント
-    startBtn.addEventListener('click', () => {
-      if (!recognition) return;
-      isExplicitlyStopped = false;
-      lastSentFinalText = '';
-      recognition.start();
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
-    });
-
-    stopBtn.addEventListener('click', () => {
-      if (!recognition) return;
-      isExplicitlyStopped = true;
-      clearTimeout(interimTimer);
-      clearTimeout(forceFinalTimer);
-      
-      if (lastInterimText.trim() !== '') {
-        sendToFirebase(lastInterimText, false);
-        lastInterimText = '';
+    function clearLogs() {
+      if (confirm('全てのログと要約を消去しますか？')) {
+        db.ref('transcripts').remove();
+        recentLogs = [];
+        alert('消去完了しました');
       }
-
-      recognition.stop();
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
-    });
-
-    // ログ消去ボタン
-    clearBtn.addEventListener('click', async () => {
-      if (confirm('画面に表示されているすべての字幕ログを削除しますか？')) {
-        try {
-          const rootRef = ref(db, 'transcripts');
-          await remove(rootRef);
-          
-          lastInterimText = '';
-          lastSentFinalText = '';
-          previewArea.textContent = 'ログをクリアしました。';
-          previewArea.style.color = '#888';
-          
-          alert('ログを全消去しました。');
-        } catch (error) {
-          console.error('消去エラー:', error);
-          alert('消去に失敗しました。Firebaseのルール設定を確認してください。');
-        }
-      }
-    });
+    }
   </script>
-  <style>
-    body { font-family: sans-serif; padding: 20px; background: #222; color: #fff; }
-    button { padding: 10px 20px; font-size: 1rem; margin-right: 10px; cursor: pointer; }
-    .status { margin-top: 15px; font-weight: bold; }
-    .preview { margin-top: 20px; padding: 10px; border: 1px solid #555; background: #333; min-height: 50px; }
-  </style>
-</head>
-<body>
-
-  <h2>音声認識 送信画面 (Gemini AI補正モード)</h2>
-
-  <div>
-    <button id="startBtn">認識＆送信開始</button>
-    <button id="stopBtn" disabled>停止</button>
-    <button id="clearBtn">ログ消去</button>
-  </div>
-
-  <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
-
-  <div class="preview" id="previewArea">ここに認識されたテキストが表示されます...</div>
-
 </body>
 </html>
