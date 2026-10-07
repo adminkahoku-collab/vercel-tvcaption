@@ -232,27 +232,30 @@
       }
     });
 
-    // 5. 要約データ (transcripts/summary) のリアルタイム受信
-    const summaryRef = ref(db, 'transcripts/summary');
-    onValue(summaryRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data && data.text) {
-        currentSummaryText = data.text;
-        summaryBox.innerText = data.text;
-        
-        // 分数の設定値を反映（未設定の場合は20分を表示）
-        const mins = data.intervalMinutes || 20;
-        intervalBadge.innerText = `（※${mins}分間隔で表示）`;
+// 5. 要約データ (transcripts/summary) のリアルタイム受信
+const summaryRef = ref(db, 'transcripts/summary');
+onValue(summaryRef, (snapshot) => {
+  const data = snapshot.val();
+  if (data && data.text) {
+    currentSummaryText = data.text;
+    summaryBox.innerText = data.text;
+    
+    // データに intervalMinutes が無ければデフォルトで 20 を使用する
+    const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
+      ? data.intervalMinutes 
+      : 20;
+      
+    intervalBadge.innerText = `（※${mins}分間隔で表示）`;
 
-        const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
-        updateTime.innerText = `最終要約更新: ${dateStr}`;
-      } else {
-        summaryBox.innerText = '要約データはまだありません。';
-        updateTime.innerText = '';
-        currentSummaryText = "";
-        intervalBadge.innerText = '（※--分間隔で表示）';
-      }
-    });
+    const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
+    updateTime.innerText = `最終要約更新: ${dateStr}`;
+  } else {
+    summaryBox.innerText = '要約データはまだありません。';
+    updateTime.innerText = '';
+    currentSummaryText = "";
+    intervalBadge.innerText = '（※20分間隔で表示）'; // データ待機時も20分と表示する場合
+  }
+});
 
     // 共通ダウンロード処理
     function downloadFile(content, fileName, mimeType) {
