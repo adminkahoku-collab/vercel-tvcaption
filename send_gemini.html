@@ -104,7 +104,7 @@
       }
     }
 
-    // 要約処理
+// 要約処理（レスポンス形式の揺らぎ・エラーチェック強化版）
     async function generateSummary(isManual = false) {
       if (isSummarizing || !db) return;
 
@@ -112,7 +112,10 @@
         const listRef = ref(db, 'transcripts/list');
         const snapshot = await get(listRef);
         
-        if (!snapshot.exists()) return;
+        if (!snapshot.exists()) {
+          alert('要約対象の字幕ログがデータベースにありません。');
+          return;
+        }
 
         const data = snapshot.val();
         const logs = Object.values(data).map(item => item.content);
@@ -138,18 +141,38 @@
           })
         });
 
-        if (!response.ok) throw new Error(`Summary API Error: ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`APIエラー: HTTP ${response.status}`);
+        }
 
         const resData = await response.json();
-        const summaryResult = resData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        console.log('要約APIレスポンス:', resData); // デバッグ用ログ
+
+        // 多様なレスポンス構造に対応（どれかにマッチすれば抽出）
+        const summaryResult = (
+          resData.candidates?.[0]?.content?.parts?.[0]?.text ||
+          resData.text ||
+          resData.content ||
+          resData.message ||
+          (typeof resData === 'string' ? resData : '')
+        ).trim();
 
         if (summaryResult) {
+          // Firebase の transcripts/summary に保存
           await set(ref(db, 'transcripts/summary'), {
             text: summaryResult,
             updatedAt: Date.now()
           });
+          
           lastSummaryLength = totalChars;
           lastSummaryTime = Date.now();
+          console.log('要約をFirebaseへ正常に保存しました！');
+          
+          if (isManual) {
+            alert('要約の生成とFirebaseへの保存が完了しました。');
+          }
+        } else {
+          showError('AIからの要約結果が空でした。APIの返却データ構造を確認してください。');
         }
       } catch (err) {
         showError("要約作成エラー: " + err.message);
@@ -159,7 +182,6 @@
         statusEl.style.color = isExplicitlyStopped ? '#ff5252' : '#00e676';
       }
     }
-
     function resetPauseTimer() {
       clearTimeout(pauseTimer);
       pauseTimer = setTimeout(() => generateSummary(false), PAUSE_DELAY_MS);
