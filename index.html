@@ -13,6 +13,7 @@
       height: 100vh;
       background-color: #121212; /* 黒ベース */
       color: #e0e0e0;             /* 白抜き文字 */
+      overflow: hidden;           /* 全体スクロールを禁止 */
     }
     
     /* 左パネル：字幕表示 */
@@ -23,19 +24,20 @@
       display: flex;
       flex-direction: column;
       height: 100%;
+      overflow: hidden;
     }
     
-    /* 過去ログ表示エリア */
-    #logContainer {
-      flex-grow: 1;
+    /* ログと未確定テキストを包むスクロールエリア */
+    #scrollArea {
+      flex: 1;
       overflow-y: auto;
       padding-right: 5px;
     }
     
-    /* 字幕の文言：隙間を調整 */
+    /* 確定字幕ログのスタイル */
     .log-item {
-      margin-bottom: 6px;   /* 点線の下側（次の発言との間）の隙間 */
-      padding-bottom: 4px;  /* 文字と点線の間の隙間 */
+      margin-bottom: 4px;   /* 点線の下側（次の発言との間）の隙間 */
+      padding-bottom: 3px;  /* 文字と点線の間の隙間 */
       border-bottom: 1px dashed #333; /* 点線 */
       line-height: 1.4;
       font-size: 0.95rem;
@@ -44,7 +46,7 @@
 
     /* タイムスタンプのデザイン */
     .timestamp {
-      color: #00e676; /* サブカラーのグリーンで強調 */
+      color: #00e676;
       font-size: 0.85rem;
       font-family: monospace;
       margin-right: 8px;
@@ -55,10 +57,15 @@
       color: #aaa;
       font-style: italic;
       margin-top: 8px;
-      padding: 4px 0 8px 0;
       line-height: 1.5;
-      /min-height: 1.5em;
       font-size: 0.95rem;
+      word-break: break-word;
+    }
+
+    /* ★最下段を使わないための「スペーサー（空白領域）」 */
+    .bottom-spacer {
+      height: 60px; /* 画面最下部に60px分の空スペースを確保 */
+      flex-shrink: 0;
     }
 
     /* 右パネル：AI要約 */
@@ -126,8 +133,14 @@
       <button id="dlLogTxtBtn">字幕をTXTで保存</button>
       <button id="dlLogMdBtn">字幕をMarkdownで保存</button>
     </div>
-    <div id="logContainer"></div>
-    <div id="interimBox" class="interim"></div>
+    
+    <!-- スクロール可能なエリア（ログ＋未確定テキスト＋最下部余白） -->
+    <div id="scrollArea">
+      <div id="logContainer"></div>
+      <div id="interimBox" class="interim"></div>
+      <!-- 最下段を空けておくための透明なスペーサー -->
+      <div class="bottom-spacer"></div>
+    </div>
   </div>
 
   <!-- 右側：AI要約表示＆ダウンロードエリア -->
@@ -157,8 +170,14 @@
     const interimBox = document.getElementById('interimBox');
     const summaryBox = document.getElementById('summaryBox');
     const updateTime = document.getElementById('updateTime');
+    const scrollArea = document.getElementById('scrollArea');
 
-    // 2. 確定ログ (transcripts/list) の取得（日時表示追加）
+    // スクロールを最下部へ送る処理（スペーサーがあるため未確定テキストも完全に視認可能）
+    function scrollToBottom() {
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+    }
+
+    // 2. 確定ログ (transcripts/list) の取得
     const listRef = ref(db, 'transcripts/list');
     onChildAdded(listRef, (snapshot) => {
       const data = snapshot.val();
@@ -166,7 +185,6 @@
         const div = document.createElement('div');
         div.className = 'log-item';
         
-        // タイムスタンプの取得（timestamp, createdAt, time等のキーに対応。無い場合は現在時刻）
         const rawTime = data.timestamp || data.createdAt || data.time;
         const timeObj = rawTime ? new Date(rawTime) : new Date();
         const timeStr = timeObj.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -174,12 +192,11 @@
         div.innerHTML = `<span class="timestamp">[${timeStr}]</span>${data.content}`;
         logContainer.appendChild(div);
         
-        // 常に最新メッセージが見えるように自動スクロール
-        logContainer.scrollTop = logContainer.scrollHeight;
+        scrollToBottom();
       }
     });
 
-    // 3. 送信側で「ログ消去」が実行された場合のみ画面表示をクリア
+    // 3. 送信側で「ログ消去」が実行された場合のクリア処理
     onChildRemoved(listRef, () => {
       logContainer.innerHTML = '';
       interimBox.innerText = '';
@@ -194,6 +211,7 @@
       const data = snapshot.val();
       if (data && data.content) {
         interimBox.innerText = `[発話中...] ${data.content}`;
+        scrollToBottom();
       } else {
         interimBox.innerText = '';
       }
@@ -216,7 +234,7 @@
       }
     });
 
-    // 共通のファイルダウンロード関数
+    // 共通ダウンロード処理
     function downloadFile(content, fileName, mimeType) {
       const blob = new Blob([content], { type: `${mimeType};charset=utf-8;` });
       const url = URL.createObjectURL(blob);
@@ -229,7 +247,7 @@
       URL.revokeObjectURL(url);
     }
 
-    // 6. 字幕ログの保存処理（日時も一緒に保存）
+    // 6. 字幕ログの保存処理
     function downloadLog(format) {
       const items = Array.from(logContainer.querySelectorAll('.log-item'));
       if (items.length === 0) {
