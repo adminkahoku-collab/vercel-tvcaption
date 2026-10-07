@@ -2,17 +2,61 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>リアルタイム字幕 Sender (ポーズ検知・AI要約モード)</title>
+  <title>リアルタイム字幕 Sender (エラー回避・安定版)</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #222; color: #fff; }
+    button { padding: 10px 20px; font-size: 1rem; margin-right: 10px; margin-bottom: 10px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { margin-top: 15px; font-weight: bold; }
+    .preview { margin-top: 15px; padding: 10px; border: 1px solid #555; background: #333; min-height: 50px; line-height: 1.5; }
+    .error-log { margin-top: 15px; padding: 10px; border: 1px solid #f44336; background: #300; color: #ff8a80; font-size: 0.85rem; display: none; }
+  </style>
+</head>
+<body>
+
+  <h2>音声認識 送信画面 (エラー回避・安定版)</h2>
+
+  <div>
+    <button id="startBtn">認識＆送信開始</button>
+    <button id="stopBtn" disabled>停止</button>
+    <button id="summaryBtn">今すぐ要約作成</button>
+    <button id="clearBtn">ログ消去</button>
+  </div>
+
+  <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
+
+  <div class="preview" id="previewArea">ここに認識されたテキストが表示されます...</div>
+  <div class="error-log" id="errorLog"></div>
+
   <script type="module">
+    // エラーハンドラ（画面上にエラーを表示）
+    function showError(msg) {
+      console.error(msg);
+      const errEl = document.getElementById('errorLog');
+      if (errEl) {
+        errEl.style.display = 'block';
+        errEl.textContent = '【システムエラー】 ' + msg;
+      }
+    }
+
+    window.addEventListener('error', (e) => showError(e.message));
+    window.addEventListener('unhandledrejection', (e) => showError(e.reason));
+
+    // Firebase SDK の読み込み
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getDatabase, ref, set, push, remove, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-    // 1. Firebase Realtime Database 初期化設定
     const firebaseConfig = {
       databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
     };
-    const app = initializeApp(firebaseConfig);
-    const db = getDatabase(app);
+
+    let app, db;
+    try {
+      app = initializeApp(firebaseConfig);
+      db = getDatabase(app);
+    } catch (e) {
+      showError("Firebase初期化失敗: " + e.message);
+    }
 
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
@@ -21,47 +65,50 @@
     const statusEl = document.getElementById('status');
     const previewArea = document.getElementById('previewArea');
 
-    let recognition;
+    let recognition = null;
     let isExplicitlyStopped = false;
     let interimTimer = null;
     let forceFinalTimer = null;
     let lastInterimText = '';
     let lastSentFinalText = '';
 
-    // 無償枠向け・要約制御用の変数
     let isSummarizing = false;
-    let pauseTimer = null;           // ポーズ（無音）検知用タイマー
-    let lastSummaryLength = 0;       // 前回要約した時点の総文字数
-    let lastSummaryTime = 0;         // 前回要約したタイムスタンプ
-    const PAUSE_DELAY_MS = 15000;    // ポーズ判定時間（15秒間無音なら要約検討）
-    const MIN_INTERVAL_MS = 30000;   // 要約の最小間隔（30秒ガード）
-    const MIN_CHAR_DIFF = 150;       // 要約を実行するのに必要な「新規文字数」（150文字増えたら）
+    let pauseTimer = null;
+    let lastSummaryLength = 0;
+    let lastSummaryTime = 0;
+    const PAUSE_DELAY_MS = 15000;
+    const MIN_INTERVAL_MS = 30000;
+    const MIN_CHAR_DIFF = 100;
 
-    // Vercel /api/chat によるテキスト校正
+    // AI校正
     async function correctTextWithGemini(text) {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
-            prompt: `以下の音声認識テキストから「ええ」「ああ」「あのー」「えーと」などのフィラー（不要な言い淀みや相槌）を除去し、同音異義語・誤字を修整して自然な日本語に補正してください。余計な解説や挨拶は一切出力せず、補正後のテキストのみを出力してください。\n\n【テキスト】\n${text}`
-            /prompt: `以下の音声認識テキストの同音異義語・誤字を修整し、自然な日本語に補正してください。余計な解説は出力せず補正結果のみ返してください。\n\n【テキスト】\n${text}`
+            prompt: `以下の音声認識テキストから「ええ」「ああ」「あのー」「えーっと」などの不要な言い淀みや相槌を除去し、同音異義語・誤字を修整して自然な日本語に補正してください。余計な解説や挨拶は一切出力せず、補正後のテキストのみを出力してください。\n\n【テキスト】\n${text}`
           })
         });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`API HTTP Error: ${response.status}`);
         const data = await response.json();
         return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || text;
       } catch (err) {
-        console.warn('AI Correction Error:', err);
-        return text;
+        return text; // エラー時は原文を返す
       }
     }
 
-    // ★要約処理（ポーズ判定または手動実行時に呼び出し）
+    // 要約処理
     async function generateSummary(isManual = false) {
-      if (isSummarizing) return;
+      if (isSummarizing || !db) return;
 
       try {
-        // Firebase から全ログを取得
         const listRef = ref(db, 'transcripts/list');
         const snapshot = await get(listRef);
         
@@ -72,15 +119,9 @@
         const fullText = logs.join('\n');
         const totalChars = fullText.length;
 
-        // 【自動呼び出し時のチェックガード】
         if (!isManual) {
           const now = Date.now();
-          const charDiff = totalChars - lastSummaryLength;
-          const timeDiff = now - lastSummaryTime;
-
-          // 前回の要約から「文字数が増えていない」または「30秒経っていない」場合はスキップ
-          if (charDiff < MIN_CHAR_DIFF || timeDiff < MIN_INTERVAL_MS) {
-            console.log(`要約スキップ: 新規文字数 ${charDiff}文字 / 経過時間 ${Math.round(timeDiff/1000)}秒`);
+          if ((totalChars - lastSummaryLength) < MIN_CHAR_DIFF || (now - lastSummaryTime) < MIN_INTERVAL_MS) {
             return;
           }
         }
@@ -89,61 +130,47 @@
         statusEl.textContent = 'AI要約生成中...';
         statusEl.style.color = '#ffb300';
 
-        const promptText = `以下は会議のログです。全体の内容を整理し、主要な話題、決定事項、重要なやり取りを箇条書きで簡潔に要約してください。\n\n【発言ログ】\n${fullText}`;
-
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: promptText })
+          body: JSON.stringify({
+            prompt: `以下は会議のログです。全体の内容を整理し、主要な話題、決定事項、重要なやり取りを箇条書きで簡潔に要約してください。\n\n【発言ログ】\n${fullText}`
+          })
         });
-        
+
+        if (!response.ok) throw new Error(`Summary API Error: ${response.status}`);
+
         const resData = await response.json();
         const summaryResult = resData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
         if (summaryResult) {
-          const summaryRef = ref(db, 'transcripts/summary');
-          await set(summaryRef, {
+          await set(ref(db, 'transcripts/summary'), {
             text: summaryResult,
             updatedAt: Date.now()
           });
-          
-          // 記録を更新
           lastSummaryLength = totalChars;
           lastSummaryTime = Date.now();
-          console.log('要約をFirebaseへ更新しました（無事成功）');
         }
       } catch (err) {
-        console.error('AI Summary Error:', err);
+        showError("要約作成エラー: " + err.message);
       } finally {
         isSummarizing = false;
-        if (!isExplicitlyStopped) {
-          statusEl.textContent = '認識中（ポーズ検知AI要約）';
-          statusEl.style.color = '#00e676';
-        } else {
-          statusEl.textContent = '停止中';
-          statusEl.style.color = '#ff5252';
-        }
+        statusEl.textContent = isExplicitlyStopped ? '停止中' : '認識中（AI要約モード）';
+        statusEl.style.color = isExplicitlyStopped ? '#ff5252' : '#00e676';
       }
     }
 
-    // ポーズ（無音）タイマーのセット・再セット
     function resetPauseTimer() {
       clearTimeout(pauseTimer);
-      // 発言が止まって15秒後に「要約条件を満たしているか」をチェックして自動実行
-      pauseTimer = setTimeout(() => {
-        console.log('15秒のポーズ（無音）を検知しました。要約の実行を試みます...');
-        generateSummary(false);
-      }, PAUSE_DELAY_MS);
+      pauseTimer = setTimeout(() => generateSummary(false), PAUSE_DELAY_MS);
     }
 
-    // Firebase 送信処理
     async function processAndSend(text, isInterim = false) {
       const trimmedText = text ? text.trim() : '';
-      if (!trimmedText) return;
+      if (!trimmedText || !db) return;
 
       if (isInterim) {
-        const interimRef = ref(db, 'transcripts/interim');
-        await set(interimRef, {
+        await set(ref(db, 'transcripts/interim'), {
           content: trimmedText,
           timestamp: Date.now()
         });
@@ -156,20 +183,25 @@
 
         lastSentFinalText = trimmedText;
         await remove(ref(db, 'transcripts/interim'));
-        updatePreview(`[AI補正中...] ${trimmedText}`, false);
 
-        // 確定メッセージをAI補正
-        const correctedText = await correctTextWithGemini(trimmedText);
-
-        // Firebase へ確定保存
         const listRef = ref(db, 'transcripts/list');
-        await push(listRef, {
-          content: correctedText,
+        const newRef = push(listRef);
+        await set(newRef, {
+          content: trimmedText,
           timestamp: Date.now()
         });
-        updatePreview(`[確定] ${correctedText}`, false);
+        updatePreview(`[確定] ${trimmedText}`, false);
 
-        // ★発言が確定するたびにポーズ（無音）タイマーをリセット
+        correctTextWithGemini(trimmedText).then(async (correctedText) => {
+          if (correctedText && correctedText !== trimmedText) {
+            await set(newRef, {
+              content: correctedText,
+              timestamp: Date.now()
+            });
+            updatePreview(`[補正済] ${correctedText}`, false);
+          }
+        });
+
         resetPauseTimer();
       }
     }
@@ -179,7 +211,7 @@
       previewArea.style.color = isInterim ? '#aaa' : '#00e676';
     }
 
-    // Web Speech API 設定
+    // Web Speech API の初期化
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognition = new SpeechRecognition();
@@ -188,7 +220,7 @@
       recognition.interimResults = true;
 
       recognition.onstart = () => { 
-        statusEl.textContent = '認識中（ポーズ検知AI要約）'; 
+        statusEl.textContent = '認識中（AI要約モード）'; 
         statusEl.style.color = '#00e676';
       };
       
@@ -197,9 +229,8 @@
           processAndSend(lastInterimText, false);
           lastInterimText = '';
         }
-        
         if (!isExplicitlyStopped) {
-          recognition.start();
+          try { recognition.start(); } catch(e){}
         } else {
           statusEl.textContent = '停止中';
           statusEl.style.color = '#ff5252';
@@ -226,11 +257,7 @@
           processAndSend(currentFinal, false);
         } else if (interimText !== '') {
           lastInterimText = interimText;
-          
-          interimTimer = setTimeout(() => {
-            processAndSend(interimText, true);
-          }, 300);
-
+          interimTimer = setTimeout(() => processAndSend(interimText, true), 300);
           forceFinalTimer = setTimeout(() => {
             if (lastInterimText.trim() !== '') {
               processAndSend(lastInterimText, false);
@@ -240,17 +267,24 @@
         }
       };
     } else {
-      alert('お使いのブラウザは Web Speech API に対応していません。Google Chrome をご使用ください。');
+      showError("お使いのブラウザは音声認識機能に対応していません。Google Chrome をご使用ください。");
     }
 
-    // ボタンイベント
+    // --- ボタンイベントのバインド ---
     startBtn.addEventListener('click', () => {
-      if (!recognition) return;
+      if (!recognition) {
+        alert('音声認識が初期化されていません。Google Chrome で開いているか確認してください。');
+        return;
+      }
       isExplicitlyStopped = false;
       lastSentFinalText = '';
-      recognition.start();
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
+      try {
+        recognition.start();
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+      } catch (e) {
+        showError("認識開始エラー: " + e.message);
+      }
     });
 
     stopBtn.addEventListener('click', () => {
@@ -270,53 +304,28 @@
       stopBtn.disabled = true;
     });
 
-    // 「手動で要約」ボタン（ガードを無視して即時実行）
-    summaryBtn.addEventListener('click', () => {
-      generateSummary(true);
-    });
+    summaryBtn.addEventListener('click', () => generateSummary(true));
 
     clearBtn.addEventListener('click', async () => {
+      if (!db) {
+        alert('データベースに接続できていません。');
+        return;
+      }
       if (confirm('すべての字幕ログと要約を削除しますか？')) {
         try {
-          const rootRef = ref(db, 'transcripts');
-          await remove(rootRef);
-          
+          await remove(ref(db, 'transcripts'));
           lastInterimText = '';
           lastSentFinalText = '';
           lastSummaryLength = 0;
           clearTimeout(pauseTimer);
           previewArea.textContent = 'ログと要約をクリアしました。';
           previewArea.style.color = '#888';
-          
-          alert('消去完了しました。');
+          alert('消去が完了しました。');
         } catch (error) {
-          console.error('消去エラー:', error);
-          alert('消去に失敗しました。');
+          showError("ログ消去エラー: " + error.message);
         }
       }
     });
   </script>
-  <style>
-    body { font-family: sans-serif; padding: 20px; background: #222; color: #fff; }
-    button { padding: 10px 20px; font-size: 1rem; margin-right: 10px; cursor: pointer; }
-    .status { margin-top: 15px; font-weight: bold; }
-    .preview { margin-top: 20px; padding: 10px; border: 1px solid #555; background: #333; min-height: 50px; line-height: 1.5; }
-  </style>
-</head>
-<body>
-
-  <h2>音声認識 送信画面 (ポーズ検知AI要約モード)</h2>
-
-  <div>
-    <button id="startBtn">認識＆送信開始</button>
-    <button id="stopBtn" disabled>停止</button>
-    <button id="summaryBtn">今すぐ要約作成</button>
-    <button id="clearBtn">ログ消去</button>
-  </div>
-
-  <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
-
-  <div class="preview" id="previewArea">ここに認識されたテキストが表示されます...</div>
-
 </body>
 </html>
