@@ -225,75 +225,83 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    async function autoGenerateSummary() {
-      if (isSummarizing || isExplicitlyStopped || !db) return;
+// 自動要約の更新間隔（例: 20分）
+const SUMMARY_INTERVAL_MS = 20 * 60 * 1000; 
+const MIN_CHAR_DIFF = 50; 
 
-      const now = Date.now();
-      
-      try {
-        const listRef = ref(db, 'transcripts/list');
-        const snapshot = await get(listRef);
-        
-        if (!snapshot.exists()) return;
+// ミリ秒から「分」を算出
+const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
 
-        const data = snapshot.val();
-        const logs = Object.values(data).map(item => item.content);
-        let fullText = logs.join('\n');
-        const totalCharCount = fullText.trim().length;
+async function autoGenerateSummary() {
+  if (isSummarizing || isExplicitlyStopped || !db) return;
 
-        if (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF) return;
+  const now = Date.now();
+  
+  try {
+    const listRef = ref(db, 'transcripts/list');
+    const snapshot = await get(listRef);
+    
+    if (!snapshot.exists()) return;
 
-        if (fullText.length > 4000) {
-          fullText = fullText.slice(-4000);
-        }
+    const data = snapshot.val();
+    const logs = Object.values(data).map(item => item.content);
+    let fullText = logs.join('\n');
+    const totalCharCount = fullText.trim().length;
 
-        isSummarizing = true;
+    if (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF) return;
 
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: `以下は進行中の会議・対話のログです。これまでの全体内容を整理し、主要な話題、決定事項、重要なポイントを箇条書きで簡潔に要約してください。\n\n【文字起こし】\n${fullText}`
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`API接続エラー: HTTP ${response.status}`);
-        }
-
-        const resData = await response.json();
-
-        if (resData.error) {
-          const detailMsg = typeof resData.error === 'object' 
-            ? (resData.error.message || JSON.stringify(resData.error)) 
-            : resData.error;
-          throw new Error(`Gemini APIエラー: ${detailMsg}`);
-        }
-
-        const summaryResult = (
-          resData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          resData.text ||
-          resData.content ||
-          resData.message ||
-          (typeof resData === 'string' ? resData : '')
-        ).trim();
-
-        if (summaryResult) {
-          await set(ref(db, 'transcripts/summary'), {
-            text: summaryResult,
-            updatedAt: Date.now()
-          });
-
-          lastSummaryTime = now;
-          lastSummaryCharLength = totalCharCount;
-        }
-
-      } catch (err) {
-        showError("自動要約エラー: " + err.message);
-      } finally {
-        isSummarizing = false;
-      }
+    if (fullText.length > 4000) {
+      fullText = fullText.slice(-4000);
     }
+
+    isSummarizing = true;
+
+    // プロンプトをシンプルな箇条書き指定に変更
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: `以下は会議の文字起こしログです。
+以下のルールを厳格に守って、内容を箇条書きでまとめてください。
+
+【出力ルール】
+・「### 主要な話題」「### 議論のポイント」などの見出しやタイトルは絶対に付けないでください。
+・「〇〇さんの意見」「〇〇の発言」などの発言者情報は含めないでください。
+・Markdownの見出し記号（### や ** など）は使わず、シンプルな行頭の「・」または「-」を使った箇条書きのみで出力してください。
+・短くわかりやすい文章でまとめ、内容をダイレクトに箇条書きで並べてください。
+
+【文字起こしログ】
+${fullText}`
+      })
+    });
+
+    if (!response.ok) throw new Error(`API接続エラー: HTTP ${response.status}`);
+    const resData = await response.json();
+    if (resData.error) throw new Error(`Gemini APIエラー: ${resData.error.message || JSON.stringify(resData.error)}`);
+
+    const summaryResult = (
+      resData.candidates?.[0]?.content?.parts?.[0]?.text ||
+      resData.text || resData.content || resData.message || ''
+    ).trim();
+
+    if (summaryResult) {
+      // intervalMinutes（設定された分数）も一緒に Firebase へ保存
+      await set(ref(db, 'transcripts/summary'), {
+        text: summaryResult,
+        updatedAt: Date.now(),
+        intervalMinutes: intervalMinutes 
+      });
+
+      lastSummaryTime = now;
+      lastSummaryCharLength = totalCharCount;
+    }
+
+  } catch (err) {
+    showError("自動要約エラー: " + err.message);
+  } finally {
+    isSummarizing = false;
+  }
+}
 
     setInterval(() => {
       const now = Date.now();
