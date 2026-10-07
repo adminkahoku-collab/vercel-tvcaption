@@ -5,10 +5,11 @@
   <title>リアルタイム字幕・AI要約閲覧</title>
   <style>
     body { display: flex; font-family: sans-serif; margin: 0; padding: 10px; height: 100vh; box-sizing: border-box; }
-    #left-panel { flex: 2; padding-right: 15px; border-right: 2px solid #ccc; overflow-y: auto; }
+    #left-panel { flex: 2; padding-right: 15px; border-right: 2px solid #ccc; overflow-y: auto; display: flex; flex-direction: column; }
     #right-panel { flex: 1; padding-left: 15px; overflow-y: auto; background-color: #f9f9f9; }
-    .log-item { margin-bottom: 8px; border-bottom: 1px dashed #eee; padding-bottom: 4px; }
-    .interim { color: #888; font-style: italic; }
+    #logContainer { flex-grow: 1; }
+    .log-item { margin-bottom: 8px; border-bottom: 1px dashed #eee; padding-bottom: 4px; line-height: 1.5; }
+    .interim { color: #888; font-style: italic; margin-top: 10px; min-height: 1.5em; }
     #summaryBox { white-space: pre-wrap; background: #fff; padding: 10px; border: 1px solid #ddd; border-radius: 4px; min-height: 200px; }
     .btn-group { margin-bottom: 10px; }
     button { padding: 6px 12px; margin-right: 5px; cursor: pointer; }
@@ -50,8 +51,9 @@
     const interimBox = document.getElementById('interimBox');
     const summaryBox = document.getElementById('summaryBox');
     const updateTime = document.getElementById('updateTime');
+    const leftPanel = document.getElementById('left-panel');
 
-    // 2. 確定ログ (transcripts/list) のリアルタイム受信
+    // 2. 確定ログ (transcripts/list) のリアルタイム追加受信
     const listRef = ref(db, 'transcripts/list');
     onChildAdded(listRef, (snapshot) => {
       const data = snapshot.val();
@@ -61,23 +63,20 @@
         div.innerText = data.content;
         logContainer.appendChild(div);
         
-        // 自動スクロール
-        const leftPanel = document.getElementById('left-panel');
+        // 常に最新の発言が見えるよう一番下にスクロール
         leftPanel.scrollTop = leftPanel.scrollHeight;
       }
     });
 
-    // ログが消去された場合に画面をクリアする処理
-    const rootRef = ref(db, 'transcripts');
-    onChildRemoved(rootRef, () => {
-      logContainer.innerHTML = '';
-      interimBox.innerText = '';
-      summaryBox.innerText = '要約データはまだありません。';
-      updateTime.innerText = '';
-      currentSummaryText = '';
+    // 3. 送信側で「ログ消去」が実行された場合のみ画面の確定ログをクリア
+    onChildRemoved(listRef, () => {
+      // リスト内の要素が削除された（全削除等）際に画面もリフレッシュ
+      if (logContainer.children.length > 0) {
+        logContainer.innerHTML = '';
+      }
     });
 
-    // 3. 途中経過 (transcripts/interim) のリアルタイム受信
+    // 4. 途中経過 (transcripts/interim) のリアルタイム受信
     const interimRef = ref(db, 'transcripts/interim');
     onValue(interimRef, (snapshot) => {
       const data = snapshot.val();
@@ -88,7 +87,7 @@
       }
     });
 
-    // 4. 要約データ (transcripts/summary) のリアルタイム受信
+    // 5. 要約データ (transcripts/summary) のリアルタイム受信
     const summaryRef = ref(db, 'transcripts/summary');
     onValue(summaryRef, (snapshot) => {
       const data = snapshot.val();
@@ -105,7 +104,7 @@
       }
     });
 
-    // 5. ダウンロード機能
+    // 6. ダウンロード機能
     function downloadSummary(format) {
       if (!currentSummaryText) {
         alert('保存できる要約データがありません。');
