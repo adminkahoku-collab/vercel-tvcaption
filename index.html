@@ -62,7 +62,7 @@
       word-break: break-word;
     }
 
-    /* ★最下段を使わないための「スペーサー（空白領域）」 */
+    /* 最下段を使わないための「スペーサー（空白領域）」 */
     .bottom-spacer {
       height: 60px; /* 画面最下部に60px分の空スペースを確保 */
       flex-shrink: 0;
@@ -85,6 +85,16 @@
       border-bottom: 2px solid #333;
       padding-bottom: 6px;
       color: #00e676;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+
+    /* 分数表示用のバッジ装飾 */
+    .interval-badge {
+      font-size: 0.8rem;
+      color: #aaa;
+      font-weight: normal;
     }
 
     .btn-group { margin-bottom: 10px; }
@@ -145,7 +155,10 @@
 
   <!-- 右側：AI要約表示＆ダウンロードエリア -->
   <div id="right-panel">
-    <h2>会議のAI要約</h2>
+    <h2>
+      <span>会議のAI要約</span>
+      <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
+    </h2>
     <div class="btn-group">
       <button id="dlTxtBtn">要約をTXTで保存</button>
       <button id="dlMdBtn">要約をMarkdownで保存</button>
@@ -169,10 +182,11 @@
     const logContainer = document.getElementById('logContainer');
     const interimBox = document.getElementById('interimBox');
     const summaryBox = document.getElementById('summaryBox');
+    const intervalBadge = document.getElementById('intervalBadge');
     const updateTime = document.getElementById('updateTime');
     const scrollArea = document.getElementById('scrollArea');
 
-    // スクロールを最下部へ送る処理（スペーサーがあるため未確定テキストも完全に視認可能）
+    // スクロールを最下部へ送る処理
     function scrollToBottom() {
       scrollArea.scrollTop = scrollArea.scrollHeight;
     }
@@ -203,6 +217,7 @@
       summaryBox.innerText = '要約データはまだありません。';
       updateTime.innerText = '';
       currentSummaryText = '';
+      intervalBadge.innerText = '（※--分間隔で表示）';
     });
 
     // 4. 途中経過 (transcripts/interim) のリアルタイム受信
@@ -225,12 +240,17 @@
         currentSummaryText = data.text;
         summaryBox.innerText = data.text;
         
+        // 分数の設定値を反映（未設定の場合は20分を表示）
+        const mins = data.intervalMinutes || 20;
+        intervalBadge.innerText = `（※${mins}分間隔で表示）`;
+
         const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
         updateTime.innerText = `最終要約更新: ${dateStr}`;
       } else {
         summaryBox.innerText = '要約データはまだありません。';
         updateTime.innerText = '';
         currentSummaryText = "";
+        intervalBadge.innerText = '（※--分間隔で表示）';
       }
     });
 
