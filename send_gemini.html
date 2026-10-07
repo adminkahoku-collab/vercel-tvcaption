@@ -104,35 +104,48 @@
       }
     }
 
-// 要約処理（レスポンス形式の揺らぎ・エラーチェック強化版）
+// デバッグ強化版 要約処理
     async function generateSummary(isManual = false) {
-      if (isSummarizing || !db) return;
+      console.log('--- 1. 要約ボタンが押されました (isManual:', isManual, ') ---');
+
+      if (isSummarizing) {
+        console.warn('すでに要約処理が実行中のためスキップします。');
+        return;
+      }
+      if (!db) {
+        console.error('Firebase DBが初期化されていません。');
+        alert('データベース接続エラー');
+        return;
+      }
 
       try {
+        console.log('--- 2. Firebaseからログを取得中... ---');
         const listRef = ref(db, 'transcripts/list');
-        const snapshot = await get(listRef);
         
+        // get() に 5秒のタイムアウトを設定
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Firebase読み込みタイムアウト')), 5000)
+        );
+        
+        const snapshot = await Promise.race([get(listRef), timeoutPromise]);
+        console.log('--- 3. Firebaseログ取得成功 ---');
+
         if (!snapshot.exists()) {
-          alert('要約対象の字幕ログがデータベースにありません。');
+          console.warn('Firebaseに transcripts/list データが存在しません。');
+          alert('要約対象の字幕ログがまだありません。声を吹き込んでから試してください。');
           return;
         }
 
         const data = snapshot.val();
         const logs = Object.values(data).map(item => item.content);
         const fullText = logs.join('\n');
-        const totalChars = fullText.length;
-
-        if (!isManual) {
-          const now = Date.now();
-          if ((totalChars - lastSummaryLength) < MIN_CHAR_DIFF || (now - lastSummaryTime) < MIN_INTERVAL_MS) {
-            return;
-          }
-        }
+        console.log('取得したテキスト全件 (文字数:', fullText.length, '):', fullText);
 
         isSummarizing = true;
         statusEl.textContent = 'AI要約生成中...';
         statusEl.style.color = '#ffb300';
 
+        console.log('--- 4. Vercel API (/api/chat) へ送信中... ---');
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -141,14 +154,15 @@
           })
         });
 
+        console.log('--- 5. APIレスポンス受信 ステータス:', response.status, '---');
+
         if (!response.ok) {
           throw new Error(`APIエラー: HTTP ${response.status}`);
         }
 
         const resData = await response.json();
-        console.log('要約APIレスポンス:', resData); // デバッグ用ログ
+        console.log('--- 6. API返却データ:', resData, '---');
 
-        // 多様なレスポンス構造に対応（どれかにマッチすれば抽出）
         const summaryResult = (
           resData.candidates?.[0]?.content?.parts?.[0]?.text ||
           resData.text ||
@@ -158,23 +172,22 @@
         ).trim();
 
         if (summaryResult) {
-          // Firebase の transcripts/summary に保存
+          console.log('--- 7. Firebase transcripts/summary へ書き込み中... ---');
           await set(ref(db, 'transcripts/summary'), {
             text: summaryResult,
             updatedAt: Date.now()
           });
           
-          lastSummaryLength = totalChars;
+          lastSummaryLength = fullText.length;
           lastSummaryTime = Date.now();
-          console.log('要約をFirebaseへ正常に保存しました！');
-          
-          if (isManual) {
-            alert('要約の生成とFirebaseへの保存が完了しました。');
-          }
+          console.log('✅ 【成功】要約の保存が完了しました！');
+          alert('要約の作成と保存に成功しました！');
         } else {
-          showError('AIからの要約結果が空でした。APIの返却データ構造を確認してください。');
+          console.error('❌ AIの要約結果が空でした。');
+          showError('AIの要約結果が空でした。');
         }
       } catch (err) {
+        console.error('❌ 要約処理中にエラー発生:', err);
         showError("要約作成エラー: " + err.message);
       } finally {
         isSummarizing = false;
@@ -182,6 +195,7 @@
         statusEl.style.color = isExplicitlyStopped ? '#ff5252' : '#00e676';
       }
     }
+    
     function resetPauseTimer() {
       clearTimeout(pauseTimer);
       pauseTimer = setTimeout(() => generateSummary(false), PAUSE_DELAY_MS);
