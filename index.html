@@ -9,44 +9,46 @@
       display: flex;
       font-family: sans-serif;
       margin: 0;
-      padding: 15px;
+      padding: 10px;
       height: 100vh;
       background-color: #121212; /* 黒ベース */
       color: #e0e0e0;             /* 白抜き文字 */
     }
     
-    /* 左パネル：字幕表示 */
+    /* 左パネル：字幕表示（余白を最小限にして幅を広げる） */
     #left-panel {
       flex: 2;
-      padding-right: 15px;
+      padding-right: 10px;
       border-right: 1px solid #333;
       display: flex;
       flex-direction: column;
       height: 100%;
     }
     
-    /* 過去ログ表示エリア（スクロール可能） */
+    /* 過去ログ表示エリア */
     #logContainer {
       flex-grow: 1;
       overflow-y: auto;
-      padding-right: 10px;
+      padding-right: 5px;
     }
     
+    /* 字幕の文言：文字サイズを標準に戻し、1行に入る文字数を増加 */
     .log-item {
-      margin-bottom: 12px;
+      margin-bottom: 8px;
       border-bottom: 1px dashed #333;
-      padding-bottom: 8px;
-      line-height: 1.6;
-      font-size: 1.1rem;
+      padding-bottom: 6px;
+      line-height: 1.5;
+      font-size: 0.95rem; /* 幅を広く保つために適度なサイズに変更 */
+      word-break: break-word; /* 長い単語でも自然に折返す */
     }
     
     /* 発話中の途中経過エリア */
     .interim {
-      color: #888;
+      color: #aaa;
       font-style: italic;
-      margin-top: 10px;
-      min-height: 1.8em;
-      font-size: 1rem;
+      margin-top: 8px;
+      min-height: 1.5em;
+      font-size: 0.95rem;
     }
 
     /* 右パネル：AI要約 */
@@ -55,35 +57,36 @@
       padding-left: 15px;
       overflow-y: auto;
       background-color: #1e1e1e;
-      border-radius: 8px;
-      padding: 15px;
-      margin-left: 10px;
+      border-radius: 6px;
+      padding: 12px;
+      margin-left: 5px;
     }
 
     h2 {
       margin-top: 0;
-      font-size: 1.2rem;
+      font-size: 1.1rem;
       border-bottom: 2px solid #333;
-      padding-bottom: 8px;
-      color: #00e676; /* サブカラーにグリーン */
+      padding-bottom: 6px;
+      color: #00e676;
     }
 
     #summaryBox {
       white-space: pre-wrap;
       background: #2a2a2a;
       color: #f0f0f0;
-      padding: 12px;
+      padding: 10px;
       border: 1px solid #444;
-      border-radius: 6px;
+      border-radius: 4px;
       min-height: 200px;
       line-height: 1.5;
+      font-size: 0.9rem;
     }
 
-    .btn-group { margin-bottom: 15px; }
+    .btn-group { margin-bottom: 10px; }
     
     button {
-      padding: 8px 14px;
-      margin-right: 8px;
+      padding: 6px 12px;
+      margin-right: 6px;
       cursor: pointer;
       background-color: #333;
       color: #fff;
@@ -100,7 +103,7 @@
     #updateTime {
       font-size: 0.8rem;
       color: #888;
-      margin-top: 10px;
+      margin-top: 8px;
     }
   </style>
 </head>
@@ -141,7 +144,7 @@
     const summaryBox = document.getElementById('summaryBox');
     const updateTime = document.getElementById('updateTime');
 
-    // 2. 確定ログ (transcripts/list) の取得（接続時に過去の全データも順番に読み込まれます）
+    // 2. 確定ログ (transcripts/list) の取得
     const listRef = ref(db, 'transcripts/list');
     onChildAdded(listRef, (snapshot) => {
       const data = snapshot.val();
@@ -151,7 +154,7 @@
         div.innerText = data.content;
         logContainer.appendChild(div);
         
-        // 常に最新メッセージが見えるようにログエリア最下部へ自動スクロール
+        // 常に最新メッセージが見えるように自動スクロール
         logContainer.scrollTop = logContainer.scrollHeight;
       }
     });
