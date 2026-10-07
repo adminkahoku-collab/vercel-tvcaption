@@ -5,38 +5,117 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>リアルタイム字幕 & 会議要約 表示画面</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; background: #121212; color: #fff; max-width: 1000px; margin: 0 auto; }
-    h2 { border-bottom: 2px solid #333; padding-bottom: 8px; margin-top: 25px; display: flex; align-items: baseline; gap: 10px; }
+    body { 
+      font-family: sans-serif; 
+      padding: 20px; 
+      background: #121212; 
+      color: #fff; 
+      margin: 0;
+      box-sizing: border-box;
+    }
     
-    .interval-badge { font-size: 0.85rem; color: #aaa; font-weight: normal; }
+    h2 { 
+      border-bottom: 2px solid #333; 
+      padding-bottom: 8px; 
+      margin-top: 0;
+      margin-bottom: 15px; 
+      display: flex; 
+      align-items: baseline; 
+      gap: 10px; 
+      font-size: 1.2rem;
+    }
 
-    .box { background: #1e1e1e; padding: 18px; border-radius: 8px; border: 1px solid #333; min-height: 80px; line-height: 1.7; word-break: break-all; }
-    
-    /* リアルタイム字幕用スタイル */
-    #interimArea { color: #888; font-style: italic; margin-bottom: 10px; min-height: 24px; }
-    #listArea { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column-reverse; }
-    .caption-item { padding: 6px 0; border-bottom: 1px solid #2a2a2a; color: #e0e0e0; }
+    .interval-badge { 
+      font-size: 0.85rem; 
+      color: #aaa; 
+      font-weight: normal; 
+    }
 
-    /* 要約表示用スタイル（シンプルな箇条書き） */
-    #summaryArea { white-space: pre-wrap; color: #00e676; font-size: 1.05rem; line-height: 1.8; }
-    .updated-time { font-size: 0.8rem; color: #666; margin-top: 10px; text-align: right; }
+    /* 左右2カラムレイアウト用コンテナ */
+    .container {
+      display: flex;
+      gap: 20px;
+      height: calc(100vh - 60px);
+    }
+
+    .column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #1e1e1e;
+      padding: 18px;
+      border-radius: 8px;
+      border: 1px solid #333;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+
+    /* リアルタイム字幕用エリア */
+    #interimArea { 
+      color: #888; 
+      font-style: italic; 
+      margin-bottom: 10px; 
+      min-height: 24px; 
+      word-break: break-all;
+    }
+
+    #listArea { 
+      flex: 1;
+      overflow-y: auto; 
+      display: flex; 
+      flex-direction: column-reverse; 
+      border-top: 1px solid #2a2a2a;
+      padding-top: 10px;
+    }
+
+    .caption-item { 
+      padding: 8px 0; 
+      border-bottom: 1px solid #2a2a2a; 
+      color: #e0e0e0; 
+      line-height: 1.5;
+      word-break: break-all;
+    }
+
+    /* 要約表示用エリア */
+    #summaryArea { 
+      flex: 1;
+      overflow-y: auto;
+      white-space: pre-wrap; 
+      color: #00e676; 
+      font-size: 1.05rem; 
+      line-height: 1.8; 
+      word-break: break-all;
+    }
+
+    .updated-time { 
+      font-size: 0.8rem; 
+      color: #666; 
+      margin-top: 10px; 
+      text-align: right; 
+      border-top: 1px solid #2a2a2a;
+      padding-top: 8px;
+    }
   </style>
 </head>
 <body>
 
-  <h2>
-    <span>会議のAI要約</span>
-    <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
-  </h2>
-  <div class="box">
-    <div id="summaryArea">要約データを待機中...</div>
-    <div id="updatedTime" class="updated-time"></div>
-  </div>
+  <div class="container">
+    <!-- 左側：リアルタイム字幕 -->
+    <div class="column">
+      <h2>リアルタイム字幕</h2>
+      <div id="interimArea">[認識中...]</div>
+      <div id="listArea">字幕ログを待機中...</div>
+    </div>
 
-  <h2>リアルタイム字幕</h2>
-  <div id="interimArea">[認識中...]</div>
-  <div class="box">
-    <div id="listArea">字幕ログを待機中...</div>
+    <!-- 右側：AI要約 -->
+    <div class="column">
+      <h2>
+        <span>会議のAI要約</span>
+        <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
+      </h2>
+      <div id="summaryArea">要約データを待機中...</div>
+      <div id="updatedTime" class="updated-time"></div>
+    </div>
   </div>
 
   <script type="module">
@@ -56,15 +135,15 @@
     const interimArea = document.getElementById('interimArea');
     const listArea = document.getElementById('listArea');
 
-    // 1. AI要約の受信処理（間隔分数も自動取得）
+    // 1. AI要約の受信処理（間隔分数も自動取得してヘッダー表示）
     onValue(ref(db, 'transcripts/summary'), (snapshot) => {
       const data = snapshot.val();
       if (data && data.text) {
-        // 間隔（分）の設定があれば「（※〇分間隔で表示）」と動的書き換え
+        // 間隔（分）の設定があれば「（※〇分間隔で表示）」と自動書き換え
         const mins = data.intervalMinutes || 20;
         intervalBadge.textContent = `（※${mins}分間隔で表示）`;
 
-        // 不要な「###」や「**」を画面表示時にも念のため削ぎ落とす安全フィルター
+        // 不要な「###」や「**」を画面表示時にも除去する安全フィルター
         let cleanText = data.text
           .replace(/^###\s*/gm, '')
           .replace(/\*\*/g, '');
