@@ -163,6 +163,16 @@
         const resData = await response.json();
         console.log('--- 6. API返却データ:', resData, '---');
 
+        // ★ エラーオブジェクトが返ってきたら中身を文字列にして表示する
+        if (resData.error) {
+          const detailMsg = typeof resData.error === 'object' 
+            ? (resData.error.message || JSON.stringify(resData.error)) 
+            : resData.error;
+          console.error('Gemini詳細エラー:', detailMsg);
+          showError(`AIエラー詳細: ${detailMsg}`);
+          return;
+        }        
+        
         const summaryResult = (
           resData.candidates?.[0]?.content?.parts?.[0]?.text ||
           resData.text ||
