@@ -283,18 +283,32 @@
         }
       };
 
-      recognition.onresult = (event) => {
-        let interimText = '';
-        let currentFinal = '';
+    let finalTranscript = ''; // 確定テキストの保持用
 
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            currentFinal += event.results[i][0].transcript;
-          } else {
-            interimText += event.results[i][0].transcript;
+    recognition.onresult = (event) => {
+      let interimTranscript = ''; // 途中経過用
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+
+        if (event.results[i].isFinal) {
+          // ★ 1. 確定したテキストのみを蓄積・Firebaseへ送信
+          const cleanText = transcript.trim();
+          
+          // 空文字や直前と完全に同じテキストの場合は二重追加を防ぐ
+          if (cleanText && cleanText !== lastSentText) {
+            lastSentText = cleanText;
+            saveTranscriptToFirebase(cleanText); // Firebase書き込み関数
           }
+        } else {
+          // ★ 2. 認識途中の文字は一時表示用のみに使う（保存しない）
+          interimTranscript += transcript;
         }
+      }
 
+      // 画面上のリアルタイムプレビュー表示（確定分 + 認識中）
+      previewEl.innerHTML = `<span class="final">${lastSentText}</span> <span class="interim" style="color: #888;">${interimTranscript}</span>`;
+    };
         clearTimeout(interimTimer);
         clearTimeout(forceFinalTimer);
 
