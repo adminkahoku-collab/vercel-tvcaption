@@ -225,8 +225,8 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-// 自動要約の更新間隔（例: 20分）
-const SUMMARY_INTERVAL_MS = 20 * 60 * 1000; 
+// 自動要約の更新間隔（例: 30分、単位はミリ秒）
+const SUMMARY_INTERVAL_MS = 30 * 60 * 1000; 
 const MIN_CHAR_DIFF = 50; 
 
 // ミリ秒から「分」を算出
