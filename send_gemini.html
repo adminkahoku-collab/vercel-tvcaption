@@ -104,7 +104,7 @@
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
     
-    // 自動要約の更新設定（※宣言はここで一括化）
+    // 自動要約の更新設定
     const SUMMARY_INTERVAL_MS = 30 * 60 * 1000; // 30分間隔
     const MIN_CHAR_DIFF = 50; 
     const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
@@ -116,11 +116,12 @@
       engineSelect.value = 'chrome';
     }
 
+    // 言い淀み（Filler）除去の適正化
     function cleanFillerText(text) {
       if (!text) return '';
       return text
-        .replace(/^(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)\s*/g, '')
-        .replace(/(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)/g, '')
+        .replace(/^(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)\s+/g, '')
+        .replace(/\s+(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)\s+/g, ' ')
         .trim();
     }
 
@@ -158,7 +159,6 @@
       }
     }
 
-    // XSS安全なプレビュー更新
     function updatePreview(text, isInterim) {
       previewArea.textContent = isInterim ? `[認識中...] ${text}` : `[確定] ${text}`;
       previewArea.className = `preview ${isInterim ? 'interim' : 'final'}`;
@@ -173,7 +173,7 @@
       recognition.interimResults = true;
 
       recognition.onstart = () => { 
-        statusEl.textContent = '認識中 (自動バックグラウンド要約稼働中)'; 
+        statusEl.textContent = '認識中 (30分自動要約モード)'; 
         statusEl.style.color = '#00e676';
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -236,11 +236,13 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    async function autoGenerateSummary() {
+    // 自動要約生成関数（キーワード保持指示の強化 & 初回実行考慮）
+    async function autoGenerateSummary(force = false) {
       if (isSummarizing || isExplicitlyStopped || !db) return;
 
       const now = Date.now();
-      
+      if (!force && lastSummaryTime > 0 && (now - lastSummaryTime < SUMMARY_INTERVAL_MS)) return;
+
       try {
         const listRef = ref(db, 'transcripts/list');
         const snapshot = await get(listRef);
@@ -264,14 +266,14 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            prompt: `以下は会議の文字起こしログです。
-以下のルールを厳格に守って、内容を箇条書きでまとめてください。
+            prompt: `あなたは議会や各種会議の優秀な書記です。
+以下の文字起こしログを読み取り、質疑・議論の要点をわかりやすく整理してください。
 
-【出力ルール】
-・「### 主要な話題」「### 議論のポイント」などの見出しやタイトルは絶対に付けないでください。
-・「〇〇さんの意見」「〇〇の発言」などの発言者情報は含めないでください。
-・Markdownの見出し記号（### や ** など）は使わず、シンプルな行頭の「・」または「-」を使った箇条書きのみで出力してください。
-・短くわかりやすい文章でまとめ、内容をダイレクトに箇条書きで並べてください。
+【出力要件】
+・発言内で言及された「資料〇〇ページ」「〇〇款 〇〇項 〇〇目」などの参照場所や金額・単位は絶対に省略せず記載してください。
+・「### 主要な話題」などの見出しやタイトルは絶対に付けないでください。
+・「〇〇さんの意見」などの発言者情報は含めないでください。
+・Markdown記号は使わず、シンプルな行頭の「・」を使った箇条書きのみで出力してください。
 
 【文字起こしログ】
 ${fullText}`
@@ -305,17 +307,15 @@ ${fullText}`
       }
     }
 
+    // 1分ごとにタイマーチェックを実行
     setInterval(() => {
-      const now = Date.now();
-      if (now - lastSummaryTime >= SUMMARY_INTERVAL_MS) {
-        autoGenerateSummary();
-      }
+      autoGenerateSummary(false);
     }, 60 * 1000);
 
     // ボタンのイベント登録
     startBtn.addEventListener('click', () => {
       if (!recognition) {
-        alert("音声認識機能が初期化されていません。対応ブラウザ（Chrome/Edge）でお試しくください。");
+        alert("音声認識機能が初期化されていません。対応ブラウザ（Chrome/Edge）でお試しください。");
         return;
       }
       isExplicitlyStopped = false;
@@ -349,6 +349,8 @@ ${fullText}`
         try {
           await remove(ref(db, 'transcripts'));
           lastSentFinalText = '';
+          lastSummaryTime = 0;
+          lastSummaryCharLength = 0;
           previewArea.textContent = 'ログと要約をクリアしました。';
           alert('消去完了しました。');
           clearError();
