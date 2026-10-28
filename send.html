@@ -151,3 +151,78 @@
         }
       };
     } else {
+alert('お使いのブラウザは Web Speech API に対応していません。Chrome ブラウザをご使用ください。');
+    }
+
+    // ボタンイベント
+    startBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      isExplicitlyStopped = false;
+      lastSentFinalText = '';
+      try {
+        recognition.start();
+      } catch (e) {
+        console.log('すでに起動しています:', e);
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      isExplicitlyStopped = true;
+      clearTimeout(interimTimer);
+      
+      if (lastInterimText.trim() !== '') {
+        sendToFirebase(lastInterimText, false);
+        lastInterimText = '';
+      }
+
+      recognition.stop();
+      statusEl.textContent = '停止中';
+      statusEl.style.color = '#ff5252';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    });
+
+    // ログ消去ボタン
+    clearBtn.addEventListener('click', async () => {
+      if (confirm('画面に表示されているすべての字幕ログを削除しますか？')) {
+        try {
+          const rootRef = ref(db, 'transcripts');
+          await remove(rootRef);
+          
+          lastInterimText = '';
+          lastSentFinalText = '';
+          previewArea.textContent = 'ログをクリアしました。';
+          previewArea.style.color = '#888';
+          
+          alert('ログを全消去しました。');
+        } catch (error) {
+          console.error('消去エラー:', error);
+          alert('消去に失敗しました。Firebaseのルール設定を確認してください。');
+        }
+      }
+    });
+  </script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #222; color: #fff; }
+    button { padding: 10px 20px; font-size: 1rem; margin-right: 10px; cursor: pointer; }
+    .status { margin-top: 15px; font-weight: bold; }
+    .preview { margin-top: 20px; padding: 10px; border: 1px solid #555; background: #333; min-height: 50px; }
+  </style>
+</head>
+<body>
+
+  <h2>音声認識 送信画面 (高速ダイレクトモード)</h2>
+
+  <div>
+    <button id="startBtn">認識＆送信開始</button>
+    <button id="stopBtn" disabled>停止</button>
+    <button id="clearBtn">ログ消去</button>
+  </div>
+
+  <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
+
+  <div class="preview" id="previewArea">ここに認識されたテキストが表示されます...</div>
+
+</body>
+</html>
