@@ -3,10 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>リアルタイム字幕 & 自動要約 送信画面</title>
+  <title>リアルタイム字幕 & 自動要約 送信画面 (統合版)</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; background: #1e1e1e; color: #fff; max-width: 900px; margin: 0 auto; }
-    h2 { margin-bottom: 10px; border-bottom: 2px solid #444; padding-bottom: 8px; }
+    /* send.htmlのように画面全体を広く活用しつつ、send_geminiの配色を採用 */
+    body { 
+      font-family: sans-serif; 
+      padding: 20px; 
+      background: #1e1e1e; 
+      color: #fff; 
+      margin: 0; 
+      box-sizing: border-box;
+      width: 100%;
+    }
+    h2 { margin-top: 0; margin-bottom: 15px; border-bottom: 2px solid #444; padding-bottom: 8px; }
     
     .control-panel { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
     .setting-group { margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -23,7 +32,21 @@
     #clearBtn:hover:not(:disabled) { background: #757575; }
 
     .status { margin-top: 12px; font-weight: bold; font-size: 0.95rem; }
-    .preview { margin-top: 15px; padding: 12px; border: 1px solid #444; background: #2b2b2b; min-height: 60px; border-radius: 6px; line-height: 1.6; word-break: break-all; }
+    
+    /* 画面いっぱいに広がるプレビューエリア */
+    .preview { 
+      margin-top: 15px; 
+      padding: 15px; 
+      border: 1px solid #444; 
+      background: #2b2b2b; 
+      min-height: 120px; 
+      border-radius: 6px; 
+      line-height: 1.6; 
+      word-break: break-all; 
+      font-size: 1.1rem;
+      width: 100%;
+      box-sizing: border-box;
+    }
     .interim { color: #aaa; font-style: italic; }
     .final { color: #00e676; font-weight: bold; }
     
@@ -36,10 +59,11 @@
 
   <div class="control-panel">
     <div class="setting-group">
-      <label for="engineSelect">音声処理モード:</label>
+      <label for="engineSelect">動作モード選択:</label>
       <select id="engineSelect">
-        <option value="chrome">Chrome モード (語彙・文脈優先)</option>
-        <option value="edge">Edge モード (言い淀み自動カット)</option>
+        <option value="direct">【高速ダイレクト】 無加工送信（要約なし・タイムラグ最小）</option>
+        <option value="chrome">【標準モード】 Chrome (要約あり・原稿優先)</option>
+        <option value="edge">【標準モード】 Edge (要約あり・言い淀み自動カット)</option>
       </select>
     </div>
 
@@ -104,11 +128,11 @@
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
     
-    // 自動要約の更新設定
     const SUMMARY_INTERVAL_MS = 30 * 60 * 1000; // 30分間隔
     const MIN_CHAR_DIFF = 50; 
     const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
 
+    // ブラウザ初期判定
     const userAgent = navigator.userAgent.toLowerCase();
     if (userAgent.includes('edg/')) {
       engineSelect.value = 'edge';
@@ -116,7 +140,6 @@
       engineSelect.value = 'chrome';
     }
 
-    // 言い淀み（Filler）除去の適正化
     function cleanFillerText(text) {
       if (!text) return '';
       return text
@@ -129,6 +152,7 @@
       let processedText = text ? text.trim() : '';
       if (!processedText || !db) return;
 
+      // Edgeモード時のみフィラー削除を実施
       if (engineSelect.value === 'edge') {
         processedText = cleanFillerText(processedText);
         if (!processedText) return;
@@ -173,7 +197,8 @@
       recognition.interimResults = true;
 
       recognition.onstart = () => { 
-        statusEl.textContent = '認識中 (30分自動要約モード)'; 
+        const modeLabel = engineSelect.options[engineSelect.selectedIndex].text;
+        statusEl.textContent = `認識中 (${modeLabel})`; 
         statusEl.style.color = '#00e676';
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -236,8 +261,9 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    // 自動要約生成関数（キーワード保持指示の強化 & 初回実行考慮）
+    // 自動要約生成関数（高速ダイレクトモード選択時は自動スキップ）
     async function autoGenerateSummary(force = false) {
+      if (engineSelect.value === 'direct') return; // ダイレクトモード時は要約を実行しない
       if (isSummarizing || isExplicitlyStopped || !db) return;
 
       const now = Date.now();
