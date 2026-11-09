@@ -12,7 +12,7 @@
       padding: 10px;
       height: 100vh;
       background-color: #121212; /* 黒ベース */
-      color: #e0e0e0;             /* 白抜き文字 */
+      color: #e0e0e0;              /* 白抜き文字 */
       overflow: hidden;           /* 全体スクロールを禁止 */
     }
     
@@ -36,10 +36,10 @@
     
     /* 確定字幕ログのスタイル */
     .log-item {
-      margin-bottom: 4px;   /* 点線の下側（次の発言との間）の隙間 */
-      padding-bottom: 3px;  /* 文字と点線の間の隙間 */
+      margin-bottom: 6px;   /* 点線の下側（次の発言との間）の隙間 */
+      padding-bottom: 6px;  /* 文字と点線の間の隙間 */
       border-bottom: 1px dashed #333; /* 点線 */
-      line-height: 1.4;
+      line-height: 1.5;
       font-size: 0.95rem;
       word-break: break-word;
     }
@@ -50,6 +50,17 @@
       font-size: 0.85rem;
       font-family: monospace;
       margin-right: 8px;
+    }
+
+    /* 話者名バッジのスタイル */
+    .speaker-badge {
+      font-size: 0.8rem;
+      font-weight: bold;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #ffffff;
+      margin-right: 8px;
+      display: inline-block;
     }
     
     /* 発話中の途中経過エリア */
@@ -186,6 +197,22 @@
     const updateTime = document.getElementById('updateTime');
     const scrollArea = document.getElementById('scrollArea');
 
+    // 話者ごとの自動カラー割り当てパレット
+    const speakerColors = {};
+    const COLOR_PALETTE = [
+      "#1a73e8", "#d93025", "#188038", "#e37400", "#a142f4", "#0097a7", "#e91e63", "#009688"
+    ];
+    let colorIndex = 0;
+
+    function getSpeakerColor(speaker) {
+      if (!speaker || speaker === "話者不明") return "#666666";
+      if (!speakerColors[speaker]) {
+        speakerColors[speaker] = COLOR_PALETTE[colorIndex % COLOR_PALETTE.length];
+        colorIndex++;
+      }
+      return speakerColors[speaker];
+    }
+
     // スクロールを最下部へ送る処理
     function scrollToBottom() {
       scrollArea.scrollTop = scrollArea.scrollHeight;
@@ -203,7 +230,14 @@
         const timeObj = rawTime ? new Date(rawTime) : new Date();
         const timeStr = timeObj.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        div.innerHTML = `<span class="timestamp">[${timeStr}]</span>${data.content}`;
+        const speakerName = data.speaker || "話者不明";
+        const speakerColor = getSpeakerColor(speakerName);
+
+        div.innerHTML = `
+          <span class="timestamp">[${timeStr}]</span>
+          <span class="speaker-badge" style="background-color: ${speakerColor};">${speakerName}</span>
+          <span>${data.content}</span>
+        `;
         logContainer.appendChild(div);
         
         scrollToBottom();
@@ -225,37 +259,42 @@
     onValue(interimRef, (snapshot) => {
       const data = snapshot.val();
       if (data && data.content) {
-        interimBox.innerText = `[発話中...] ${data.content}`;
+        const speakerName = data.speaker || "話者不明";
+        const speakerColor = getSpeakerColor(speakerName);
+        
+        interimBox.innerHTML = `
+          <span class="speaker-badge" style="background-color: ${speakerColor}; opacity: 0.8;">${speakerName}</span>
+          <span>[発話中...] ${data.content}</span>
+        `;
         scrollToBottom();
       } else {
-        interimBox.innerText = '';
+        interimBox.innerHTML = '';
       }
     });
 
-// 5. 要約データ (transcripts/summary) のリアルタイム受信
-const summaryRef = ref(db, 'transcripts/summary');
-onValue(summaryRef, (snapshot) => {
-  const data = snapshot.val();
-  if (data && data.text) {
-    currentSummaryText = data.text;
-    summaryBox.innerText = data.text;
-    
-    // データに intervalMinutes が無ければデフォルトで 20 を使用する
-    const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
-      ? data.intervalMinutes 
-      : 20;
-      
-    intervalBadge.innerText = `（※${mins}分間隔で表示）`;
+    // 5. 要約データ (transcripts/summary) のリアルタイム受信
+    const summaryRef = ref(db, 'transcripts/summary');
+    onValue(summaryRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data && data.text) {
+        currentSummaryText = data.text;
+        summaryBox.innerText = data.text;
+        
+        const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
+          ? data.intervalMinutes 
+          : 20;
+          
+        intervalBadge.innerText = `（※${mins}分間隔で表示）`;
 
-    const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
-    updateTime.innerText = `最終要約更新: ${dateStr}`;
-  } else {
-    summaryBox.innerText = '要約データはまだありません。';
-    updateTime.innerText = '';
-    currentSummaryText = "";
-    intervalBadge.innerText = '（※30分間隔で表示）'; // データ待機時も20分と表示する場合
-  }
-});
+        const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
+        updateTime.innerText = `最終要約更新: ${dateStr}`;
+      } else {
+        summaryBox.innerText = '要約データはまだありません。';
+        updateTime.innerText = '';
+        currentSummaryText = "";
+        intervalBadge.innerText = '（※20分間隔で表示）';
+      }
+    });
 
     // 共通ダウンロード処理
     function downloadFile(content, fileName, mimeType) {
