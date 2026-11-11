@@ -1,360 +1,322 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>リアルタイム字幕・AI要約閲覧</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      display: flex;
-      font-family: sans-serif;
-      margin: 0;
-      padding: 10px;
-      height: 100vh;
-      background-color: #121212; /* 黒ベース */
-      color: #e0e0e0;              /* 白抜き文字 */
-      overflow: hidden;           /* 全体スクロールを禁止 */
-    }
-    
-    /* 左パネル：字幕表示 */
-    #left-panel {
-      flex: 2;
-      padding-right: 10px;
-      border-right: 1px solid #333;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      overflow: hidden;
-    }
-    
-    /* ログと未確定テキストを包むスクロールエリア */
-    #scrollArea {
-      flex: 1;
-      overflow-y: auto;
-      padding-right: 5px;
-    }
-    
-    /* 確定字幕ログのスタイル */
-    .log-item {
-      margin-bottom: 6px;   /* 点線の下側（次の発言との間）の隙間 */
-      padding-bottom: 6px;  /* 文字と点線の間の隙間 */
-      border-bottom: 1px dashed #333; /* 点線 */
-      line-height: 1.5;
-      font-size: 0.95rem;
-      word-break: break-word;
-    }
+<meta charset="UTF-8">
+<title>リアルタイム字幕・AI要約閲覧</title>
+<style>
+* { box-sizing: border-box; }
+body {
+display: flex;
+font-family: sans-serif;
+margin: 0;
+padding: 10px;
+height: 100vh;
+background-color: #121212; /* 黒ベース */
+color: #e0e0e0;             /* 白抜き文字 */
+overflow: hidden;           /* 全体スクロールを禁止 */
+}
 
-    /* タイムスタンプのデザイン */
-    .timestamp {
-      color: #00e676;
-      font-size: 0.85rem;
-      font-family: monospace;
-      margin-right: 8px;
-    }
+/* 左パネル：字幕表示 */
+#left-panel {
+flex: 2;
+padding-right: 10px;
+border-right: 1px solid #333;
+display: flex;
+flex-direction: column;
+height: 100%;
+overflow: hidden;
+}
 
-    /* 話者名バッジのスタイル */
-    .speaker-badge {
-      font-size: 0.8rem;
-      font-weight: bold;
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: #ffffff;
-      margin-right: 8px;
-      display: inline-block;
-    }
-    
-    /* 発話中の途中経過エリア */
-    .interim {
-      color: #aaa;
-      font-style: italic;
-      margin-top: 8px;
-      line-height: 1.5;
-      font-size: 0.95rem;
-      word-break: break-word;
-    }
+/* ログと未確定テキストを包むスクロールエリア */
+#scrollArea {
+flex: 1;
+overflow-y: auto;
+padding-right: 5px;
+}
 
-    /* 最下段を使わないための「スペーサー（空白領域）」 */
-    .bottom-spacer {
-      height: 60px; /* 画面最下部に60px分の空スペースを確保 */
-      flex-shrink: 0;
-    }
+/* 確定字幕ログのスタイル */
+.log-item {
+margin-bottom: 4px;   /* 点線の下側（次の発言との間）の隙間 */
+padding-bottom: 3px;  /* 文字と点線の間の隙間 */
+border-bottom: 1px dashed #333; /* 点線 */
+line-height: 1.4;
+font-size: 0.95rem;
+word-break: break-word;
+}
 
-    /* 右パネル：AI要約 */
-    #right-panel {
-      flex: 1;
-      padding-left: 15px;
-      overflow-y: auto;
-      background-color: #1e1e1e;
-      border-radius: 6px;
-      padding: 12px;
-      margin-left: 5px;
-    }
+/* タイムスタンプのデザイン */
+.timestamp {
+color: #00e676;
+font-size: 0.85rem;
+font-family: monospace;
+margin-right: 8px;
+}
 
-    h2 {
-      margin-top: 0;
-      font-size: 1.1rem;
-      border-bottom: 2px solid #333;
-      padding-bottom: 6px;
-      color: #00e676;
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-    }
+/* 発話中の途中経過エリア */
+.interim {
+color: #aaa;
+font-style: italic;
+margin-top: 8px;
+line-height: 1.5;
+font-size: 0.95rem;
+word-break: break-word;
+}
 
-    /* 分数表示用のバッジ装飾 */
-    .interval-badge {
-      font-size: 0.8rem;
-      color: #aaa;
-      font-weight: normal;
-    }
+/* 最下段を使わないための「スペーサー（空白領域）」 */
+.bottom-spacer {
+height: 60px; /* 画面最下部に60px分の空スペースを確保 */
+flex-shrink: 0;
+}
 
-    .btn-group { margin-bottom: 10px; }
-    
-    button {
-      padding: 6px 12px;
-      margin-right: 6px;
-      cursor: pointer;
-      background-color: #333;
-      color: #fff;
-      border: 1px solid #555;
-      border-radius: 4px;
-      font-size: 0.85rem;
-      transition: background 0.2s;
-    }
+/* 右パネル：AI要約 */
+#right-panel {
+flex: 1;
+padding-left: 15px;
+overflow-y: auto;
+background-color: #1e1e1e;
+border-radius: 6px;
+padding: 12px;
+margin-left: 5px;
+}
 
-    button:hover {
-      background-color: #444;
-    }
+h2 {
+margin-top: 0;
+font-size: 1.1rem;
+border-bottom: 2px solid #333;
+padding-bottom: 6px;
+color: #00e676;
+display: flex;
+align-items: baseline;
+justify-content: space-between;
+}
 
-    #summaryBox {
-      white-space: pre-wrap;
-      background: #2a2a2a;
-      color: #f0f0f0;
-      padding: 10px;
-      border: 1px solid #444;
-      border-radius: 4px;
-      min-height: 200px;
-      line-height: 1.5;
-      font-size: 0.9rem;
-    }
+/* 分数表示用のバッジ装飾 */
+.interval-badge {
+font-size: 0.8rem;
+color: #aaa;
+font-weight: normal;
+}
 
-    #updateTime {
-      font-size: 0.8rem;
-      color: #888;
-      margin-top: 8px;
-    }
-  </style>
+.btn-group { margin-bottom: 10px; }
+
+button {
+padding: 6px 12px;
+margin-right: 6px;
+cursor: pointer;
+background-color: #333;
+color: #fff;
+border: 1px solid #555;
+border-radius: 4px;
+font-size: 0.85rem;
+transition: background 0.2s;
+}
+
+button:hover {
+background-color: #444;
+}
+
+#summaryBox {
+white-space: pre-wrap;
+background: #2a2a2a;
+color: #f0f0f0;
+padding: 10px;
+border: 1px solid #444;
+border-radius: 4px;
+min-height: 200px;
+line-height: 1.5;
+font-size: 0.9rem;
+}
+
+#updateTime {
+font-size: 0.8rem;
+color: #888;
+margin-top: 8px;
+}
+</style>
 </head>
 <body>
 
-  <!-- 左側：リアルタイム字幕表示エリア -->
-  <div id="left-panel">
-    <h2>リアルタイム字幕</h2>
-    <div class="btn-group">
-      <button id="dlLogTxtBtn">字幕をTXTで保存</button>
-      <button id="dlLogMdBtn">字幕をMarkdownで保存</button>
-    </div>
-    
-    <!-- スクロール可能なエリア（ログ＋未確定テキスト＋最下部余白） -->
-    <div id="scrollArea">
-      <div id="logContainer"></div>
-      <div id="interimBox" class="interim"></div>
-      <!-- 最下段を空けておくための透明なスペーサー -->
-      <div class="bottom-spacer"></div>
-    </div>
-  </div>
+<!-- 左側：リアルタイム字幕表示エリア -->
+<div id="left-panel">
+<h2>リアルタイム字幕</h2>
+<div class="btn-group">
+<button id="dlLogTxtBtn">字幕をTXTで保存</button>
+<button id="dlLogMdBtn">字幕をMarkdownで保存</button>
+</div>
 
-  <!-- 右側：AI要約表示＆ダウンロードエリア -->
-  <div id="right-panel">
-    <h2>
-      <span>会議のAI要約</span>
-      <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
-    </h2>
-    <div class="btn-group">
-      <button id="dlTxtBtn">要約をTXTで保存</button>
-      <button id="dlMdBtn">要約をMarkdownで保存</button>
-    </div>
-    <div id="summaryBox">要約を待機中...</div>
-    <div id="updateTime"></div>
-  </div>
+<!-- スクロール可能なエリア（ログ＋未確定テキスト＋最下部余白） -->
+<div id="scrollArea">
+<div id="logContainer"></div>
+<div id="interimBox" class="interim"></div>
+<!-- 最下段を空けておくための透明なスペーサー -->
+<div class="bottom-spacer"></div>
+</div>
+</div>
 
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, onChildAdded, onValue, onChildRemoved } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+<!-- 右側：AI要約表示＆ダウンロードエリア -->
+<div id="right-panel">
+<h2>
+<span>会議のAI要約</span>
+<span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
+</h2>
+<div class="btn-group">
+<button id="dlTxtBtn">要約をTXTで保存</button>
+<button id="dlMdBtn">要約をMarkdownで保存</button>
+</div>
+<div id="summaryBox">要約を待機中...</div>
+<div id="updateTime"></div>
+</div>
 
-    // 1. Firebase 初期化
-    const firebaseConfig = {
-      databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
-    };
-    const app = initializeApp(firebaseConfig);
-    const db = getDatabase(app);
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getDatabase, ref, onChildAdded, onValue, onChildRemoved } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-    let currentSummaryText = "";
-    const logContainer = document.getElementById('logContainer');
-    const interimBox = document.getElementById('interimBox');
-    const summaryBox = document.getElementById('summaryBox');
-    const intervalBadge = document.getElementById('intervalBadge');
-    const updateTime = document.getElementById('updateTime');
-    const scrollArea = document.getElementById('scrollArea');
+// 1. Firebase 初期化
+const firebaseConfig = {
+databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
 
-    // 話者ごとの自動カラー割り当てパレット
-    const speakerColors = {};
-    const COLOR_PALETTE = [
-      "#1a73e8", "#d93025", "#188038", "#e37400", "#a142f4", "#0097a7", "#e91e63", "#009688"
-    ];
-    let colorIndex = 0;
+let currentSummaryText = "";
+const logContainer = document.getElementById('logContainer');
+const interimBox = document.getElementById('interimBox');
+const summaryBox = document.getElementById('summaryBox');
+const intervalBadge = document.getElementById('intervalBadge');
+const updateTime = document.getElementById('updateTime');
+const scrollArea = document.getElementById('scrollArea');
 
-    function getSpeakerColor(speaker) {
-      if (!speaker || speaker === "話者不明") return "#666666";
-      if (!speakerColors[speaker]) {
-        speakerColors[speaker] = COLOR_PALETTE[colorIndex % COLOR_PALETTE.length];
-        colorIndex++;
-      }
-      return speakerColors[speaker];
-    }
+// スクロールを最下部へ送る処理
+function scrollToBottom() {
+scrollArea.scrollTop = scrollArea.scrollHeight;
+}
 
-    // スクロールを最下部へ送る処理
-    function scrollToBottom() {
-      scrollArea.scrollTop = scrollArea.scrollHeight;
-    }
+// 2. 確定ログ (transcripts/list) の取得
+const listRef = ref(db, 'transcripts/list');
+onChildAdded(listRef, (snapshot) => {
+const data = snapshot.val();
+if (data && data.content) {
+const div = document.createElement('div');
+div.className = 'log-item';
 
-    // 2. 確定ログ (transcripts/list) の取得
-    const listRef = ref(db, 'transcripts/list');
-    onChildAdded(listRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data && data.content) {
-        const div = document.createElement('div');
-        div.className = 'log-item';
-        
-        const rawTime = data.timestamp || data.createdAt || data.time;
-        const timeObj = rawTime ? new Date(rawTime) : new Date();
-        const timeStr = timeObj.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const rawTime = data.timestamp || data.createdAt || data.time;
+const timeObj = rawTime ? new Date(rawTime) : new Date();
+const timeStr = timeObj.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        const speakerName = data.speaker || "話者不明";
-        const speakerColor = getSpeakerColor(speakerName);
+div.innerHTML = `<span class="timestamp">[${timeStr}]</span>${data.content}`;
+logContainer.appendChild(div);
 
-        div.innerHTML = `
-          <span class="timestamp">[${timeStr}]</span>
-          <span class="speaker-badge" style="background-color: ${speakerColor};">${speakerName}</span>
-          <span>${data.content}</span>
-        `;
-        logContainer.appendChild(div);
-        
-        scrollToBottom();
-      }
-    });
+scrollToBottom();
+}
+});
 
-    // 3. 送信側で「ログ消去」が実行された場合のクリア処理
-    onChildRemoved(listRef, () => {
-      logContainer.innerHTML = '';
-      interimBox.innerText = '';
-      summaryBox.innerText = '要約データはまだありません。';
-      updateTime.innerText = '';
-      currentSummaryText = '';
-      intervalBadge.innerText = '（※--分間隔で表示）';
-    });
+// 3. 送信側で「ログ消去」が実行された場合のクリア処理
+onChildRemoved(listRef, () => {
+logContainer.innerHTML = '';
+interimBox.innerText = '';
+summaryBox.innerText = '要約データはまだありません。';
+updateTime.innerText = '';
+currentSummaryText = '';
+intervalBadge.innerText = '（※--分間隔で表示）';
+});
 
-    // 4. 途中経過 (transcripts/interim) のリアルタイム受信
-    const interimRef = ref(db, 'transcripts/interim');
-    onValue(interimRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data && data.content) {
-        const speakerName = data.speaker || "話者不明";
-        const speakerColor = getSpeakerColor(speakerName);
-        
-        interimBox.innerHTML = `
-          <span class="speaker-badge" style="background-color: ${speakerColor}; opacity: 0.8;">${speakerName}</span>
-          <span>[発話中...] ${data.content}</span>
-        `;
-        scrollToBottom();
-      } else {
-        interimBox.innerHTML = '';
-      }
-    });
+// 4. 途中経過 (transcripts/interim) のリアルタイム受信
+const interimRef = ref(db, 'transcripts/interim');
+onValue(interimRef, (snapshot) => {
+const data = snapshot.val();
+if (data && data.content) {
+interimBox.innerText = `[発話中...] ${data.content}`;
+scrollToBottom();
+} else {
+interimBox.innerText = '';
+}
+});
 
-    // 5. 要約データ (transcripts/summary) のリアルタイム受信
-    const summaryRef = ref(db, 'transcripts/summary');
-    onValue(summaryRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data && data.text) {
-        currentSummaryText = data.text;
-        summaryBox.innerText = data.text;
-        
-        const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
-          ? data.intervalMinutes 
-          : 20;
-          
-        intervalBadge.innerText = `（※${mins}分間隔で表示）`;
+// 5. 要約データ (transcripts/summary) のリアルタイム受信
+const summaryRef = ref(db, 'transcripts/summary');
+onValue(summaryRef, (snapshot) => {
+const data = snapshot.val();
+if (data && data.text) {
+currentSummaryText = data.text;
+summaryBox.innerText = data.text;
 
-        const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
-        updateTime.innerText = `最終要約更新: ${dateStr}`;
-      } else {
-        summaryBox.innerText = '要約データはまだありません。';
-        updateTime.innerText = '';
-        currentSummaryText = "";
-        intervalBadge.innerText = '（※20分間隔で表示）';
-      }
-    });
+// データに intervalMinutes が無ければデフォルトで 20 を使用する
+const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
+? data.intervalMinutes 
+: 20;
 
-    // 共通ダウンロード処理
-    function downloadFile(content, fileName, mimeType) {
-      const blob = new Blob([content], { type: `${mimeType};charset=utf-8;` });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
+intervalBadge.innerText = `（※${mins}分間隔で表示）`;
 
-    // 6. 字幕ログの保存処理
-    function downloadLog(format) {
-      const items = Array.from(logContainer.querySelectorAll('.log-item'));
-      if (items.length === 0) {
-        alert('保存できる字幕ログがありません。');
-        return;
-      }
+const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
+updateTime.innerText = `最終要約更新: ${dateStr}`;
+} else {
+summaryBox.innerText = '要約データはまだありません。';
+updateTime.innerText = '';
+currentSummaryText = "";
+    intervalBadge.innerText = '（※20分間隔で表示）'; // データ待機時も20分と表示する場合
+    intervalBadge.innerText = '（※30分間隔で表示）'; // データ待機時も20分と表示する場合
+}
+});
 
-      const now = new Date();
-      const datePrefix = now.toISOString().split('T')[0];
-      const logTexts = items.map(el => el.innerText);
+// 共通ダウンロード処理
+function downloadFile(content, fileName, mimeType) {
+const blob = new Blob([content], { type: `${mimeType};charset=utf-8;` });
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = fileName;
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+}
 
-      if (format === 'txt') {
-        const textContent = logTexts.join('\n');
-        downloadFile(textContent, `会議字幕ログ_${datePrefix}.txt`, 'text/plain');
-      } else if (format === 'md') {
-        const mdContent = `# 会議字幕ログ (${datePrefix})\n\n` + 
-                          logTexts.map(t => `- ${t}`).join('\n') + 
-                          `\n\n---\n*出力日時: ${now.toLocaleString('ja-JP')}*`;
-        downloadFile(mdContent, `会議字幕ログ_${datePrefix}.md`, 'text/markdown');
-      }
-    }
+// 6. 字幕ログの保存処理
+function downloadLog(format) {
+const items = Array.from(logContainer.querySelectorAll('.log-item'));
+if (items.length === 0) {
+alert('保存できる字幕ログがありません。');
+return;
+}
 
-    // 7. 要約の保存処理
-    function downloadSummary(format) {
-      if (!currentSummaryText) {
-        alert('保存できる要約データがありません。');
-        return;
-      }
+const now = new Date();
+const datePrefix = now.toISOString().split('T')[0];
+const logTexts = items.map(el => el.innerText);
 
-      const now = new Date();
-      const datePrefix = now.toISOString().split('T')[0];
+if (format === 'txt') {
+const textContent = logTexts.join('\n');
+downloadFile(textContent, `会議字幕ログ_${datePrefix}.txt`, 'text/plain');
+} else if (format === 'md') {
+const mdContent = `# 会議字幕ログ (${datePrefix})\n\n` + 
+logTexts.map(t => `- ${t}`).join('\n') + 
+`\n\n---\n*出力日時: ${now.toLocaleString('ja-JP')}*`;
+downloadFile(mdContent, `会議字幕ログ_${datePrefix}.md`, 'text/markdown');
+}
+}
 
-      if (format === 'txt') {
-        downloadFile(currentSummaryText, `会議要約_${datePrefix}.txt`, 'text/plain');
-      } else if (format === 'md') {
-        const mdContent = `# 会議要約レポート (${datePrefix})\n\n${currentSummaryText}\n\n---\n*自動生成日時: ${now.toLocaleString('ja-JP')}*`;
-        downloadFile(mdContent, `会議要約_${datePrefix}.md`, 'text/markdown');
-      }
-    }
+// 7. 要約の保存処理
+function downloadSummary(format) {
+if (!currentSummaryText) {
+alert('保存できる要約データがありません。');
+return;
+}
 
-    // イベントリスナーの登録
-    document.getElementById('dlLogTxtBtn').addEventListener('click', () => downloadLog('txt'));
-    document.getElementById('dlLogMdBtn').addEventListener('click', () => downloadLog('md'));
-    document.getElementById('dlTxtBtn').addEventListener('click', () => downloadSummary('txt'));
-    document.getElementById('dlMdBtn').addEventListener('click', () => downloadSummary('md'));
-  </script>
+const now = new Date();
+const datePrefix = now.toISOString().split('T')[0];
+
+if (format === 'txt') {
+downloadFile(currentSummaryText, `会議要約_${datePrefix}.txt`, 'text/plain');
+} else if (format === 'md') {
+const mdContent = `# 会議要約レポート (${datePrefix})\n\n${currentSummaryText}\n\n---\n*自動生成日時: ${now.toLocaleString('ja-JP')}*`;
+downloadFile(mdContent, `会議要約_${datePrefix}.md`, 'text/markdown');
+}
+}
+
+// イベントリスナーの登録
+document.getElementById('dlLogTxtBtn').addEventListener('click', () => downloadLog('txt'));
+document.getElementById('dlLogMdBtn').addEventListener('click', () => downloadLog('md'));
+document.getElementById('dlTxtBtn').addEventListener('click', () => downloadSummary('txt'));
+document.getElementById('dlMdBtn').addEventListener('click', () => downloadSummary('md'));
+</script>
 </body>
 </html>
