@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>リアルタイム字幕 & 自動要約 送信画面 (統合版)</title>
   <style>
-    /* send.htmlのように画面全体を広く活用しつつ、send_geminiの配色を採用 */
     body { 
       font-family: sans-serif; 
       padding: 20px; 
@@ -18,7 +17,8 @@
     h2 { margin-top: 0; margin-bottom: 15px; border-bottom: 2px solid #444; padding-bottom: 8px; }
     
     .control-panel { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-    .setting-group { margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .setting-group { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .setting-item { display: flex; align-items: center; gap: 6px; }
     label { font-size: 0.9rem; color: #ccc; font-weight: bold; }
     select { padding: 6px 12px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 0.9rem; }
     
@@ -33,7 +33,6 @@
 
     .status { margin-top: 12px; font-weight: bold; font-size: 0.95rem; }
     
-    /* 画面いっぱいに広がるプレビューエリア */
     .preview { 
       margin-top: 15px; 
       padding: 15px; 
@@ -48,6 +47,7 @@
       box-sizing: border-box;
     }
     .interim { color: #aaa; font-style: italic; }
+    .buffering { color: #ffd54f; }
     .final { color: #00e676; font-weight: bold; }
     
     .error-log { margin-top: 15px; padding: 10px 15px; border: 1px solid #ff5252; background: #3c1616; color: #ff8a80; border-radius: 6px; font-size: 0.85rem; display: none; }
@@ -59,12 +59,24 @@
 
   <div class="control-panel">
     <div class="setting-group">
-      <label for="engineSelect">動作モード選択:</label>
-      <select id="engineSelect">
-        <option value="direct">【高速ダイレクト】 無加工送信（要約なし・タイムラグ最小）</option>
-        <option value="chrome">【標準モード】 Chrome (要約あり・原稿優先)</option>
-        <option value="edge">【標準モード】 Edge (要約あり・言い淀み自動カット)</option>
-      </select>
+      <div class="setting-item">
+        <label for="engineSelect">動作モード:</label>
+        <select id="engineSelect">
+          <option value="edge" selected>【標準モード】 Edge (要約あり・言い淀み自動カット)</option>
+          <option value="chrome">【標準モード】 Chrome (要約あり・原稿優先)</option>
+          <option value="direct">【高速ダイレクト】 無加工送信（要約なし・タイムラグ最小）</option>
+        </select>
+      </div>
+
+      <div class="setting-item">
+        <label for="bufferWaitSelect">単語結合待ち:</label>
+        <select id="bufferWaitSelect">
+          <option value="0">0秒 (結合なし・即確定)</option>
+          <option value="1500">1.5秒 (短め)</option>
+          <option value="2500" selected>2.5秒 (標準・文節結合)</option>
+          <option value="4000">4.0秒 (長文まとめ)</option>
+        </select>
+      </div>
     </div>
 
     <div>
@@ -116,6 +128,7 @@
     const stopBtn = document.getElementById('stopBtn');
     const clearBtn = document.getElementById('clearBtn');
     const engineSelect = document.getElementById('engineSelect');
+    const bufferWaitSelect = document.getElementById('bufferWaitSelect');
     const statusEl = document.getElementById('status');
     const previewArea = document.getElementById('previewArea');
 
@@ -125,6 +138,11 @@
     let lastInterimText = '';
     let isSummarizing = false;
 
+    // 単語分断防止用の結合バッファ変数
+    let finalBufferText = '';
+    let bufferFlushTimer = null;
+    const MAX_BUFFER_LENGTH = 60; // 60文字を超えたら待機中でも強制確定
+
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
     
@@ -132,13 +150,8 @@
     const MIN_CHAR_DIFF = 50; 
     const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
 
-    // ブラウザ初期判定
-    const userAgent = navigator.userAgent.toLowerCase();
-    if (userAgent.includes('edg/')) {
-      engineSelect.value = 'edge';
-    } else {
-      engineSelect.value = 'chrome';
-    }
+    // 初期値は Edge に設定
+    engineSelect.value = 'edge';
 
     function cleanFillerText(text) {
       if (!text) return '';
@@ -146,6 +159,35 @@
         .replace(/^(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)\s+/g, '')
         .replace(/\s+(えーっと|えー|あのー|あの|ええと|ええ|あー|うん|そのー|まあ)\s+/g, ' ')
         .trim();
+    }
+
+    // 溜まった確定バッファを実際に Firebase (transcripts/list) へ送信する関数
+    async function flushFinalBuffer() {
+      if (bufferFlushTimer) {
+        clearTimeout(bufferFlushTimer);
+        bufferFlushTimer = null;
+      }
+
+      const textToSend = finalBufferText.trim();
+      finalBufferText = '';
+
+      if (!textToSend || !db) return;
+
+      if (textToSend === lastSentFinalText) {
+        await remove(ref(db, 'transcripts/interim'));
+        return;
+      }
+
+      lastSentFinalText = textToSend;
+      await remove(ref(db, 'transcripts/interim'));
+
+      const listRef = ref(db, 'transcripts/list');
+      await push(listRef, {
+        content: textToSend,
+        timestamp: Date.now()
+      });
+
+      updatePreview(textToSend, 'final');
     }
 
     async function processAndSend(text, isInterim = false) {
@@ -158,34 +200,64 @@
         if (!processedText) return;
       }
 
+      // ダイレクトモードまたは待機0秒設定の場合は結合待機なし
+      const waitMs = (engineSelect.value === 'direct') ? 0 : parseInt(bufferWaitSelect.value, 10);
+
       if (isInterim) {
+        // すでに確定バッファに待機中の文字がある場合は、その続きとして仮表示する
+        const displayInterim = finalBufferText 
+          ? `${finalBufferText} ${processedText}` 
+          : processedText;
+
         await set(ref(db, 'transcripts/interim'), {
-          content: processedText,
+          content: displayInterim,
           timestamp: Date.now()
         });
-        updatePreview(processedText, true);
+        updatePreview(displayInterim, 'interim');
       } else {
-        if (processedText === lastSentFinalText) {
-          await remove(ref(db, 'transcripts/interim'));
-          return;
+        // 確定（isFinal）が来たときの処理
+        if (waitMs <= 0) {
+          // 待機なし設定なら即座に確定送信
+          finalBufferText = finalBufferText ? `${finalBufferText} ${processedText}` : processedText;
+          await flushFinalBuffer();
+        } else {
+          // バッファに文字を連結
+          finalBufferText = finalBufferText ? `${finalBufferText} ${processedText}` : processedText;
+
+          // 閲覧画面の interim 欄に「確定待ち（結合中）」の文字を即反映
+          await set(ref(db, 'transcripts/interim'), {
+            content: finalBufferText,
+            timestamp: Date.now()
+          });
+          updatePreview(finalBufferText, 'buffering');
+
+          // 既存タイマーをリセット
+          if (bufferFlushTimer) clearTimeout(bufferFlushTimer);
+
+          // 一定文字数以上になったら待たずに確定
+          if (finalBufferText.length >= MAX_BUFFER_LENGTH) {
+            await flushFinalBuffer();
+          } else {
+            // 指定秒数（例：2.5秒）次の確定が来なければ送信実行
+            bufferFlushTimer = setTimeout(() => {
+              flushFinalBuffer();
+            }, waitMs);
+          }
         }
-
-        lastSentFinalText = processedText;
-        await remove(ref(db, 'transcripts/interim'));
-
-        const listRef = ref(db, 'transcripts/list');
-        await push(listRef, {
-          content: processedText,
-          timestamp: Date.now()
-        });
-
-        updatePreview(processedText, false);
       }
     }
 
-    function updatePreview(text, isInterim) {
-      previewArea.textContent = isInterim ? `[認識中...] ${text}` : `[確定] ${text}`;
-      previewArea.className = `preview ${isInterim ? 'interim' : 'final'}`;
+    function updatePreview(text, state) {
+      if (state === 'interim') {
+        previewArea.textContent = `[認識中...] ${text}`;
+        previewArea.className = 'preview interim';
+      } else if (state === 'buffering') {
+        previewArea.textContent = `[文節結合待ち...] ${text}`;
+        previewArea.className = 'preview buffering';
+      } else {
+        previewArea.textContent = `[確定送信済] ${text}`;
+        previewArea.className = 'preview final';
+      }
     }
 
     // 音声認識の初期化
@@ -205,9 +277,9 @@
         clearError();
       };
 
-      recognition.onend = () => { 
+      recognition.onend = async () => { 
         if (lastInterimText.trim() !== '') {
-          processAndSend(lastInterimText, false);
+          await processAndSend(lastInterimText, false);
           lastInterimText = '';
         }
 
@@ -220,6 +292,8 @@
             }
           }, 100);
         } else {
+          // 明示的停止時は残っているバッファを即確定送信
+          await flushFinalBuffer();
           statusEl.textContent = '停止中';
           statusEl.style.color = '#ff5252';
           startBtn.disabled = false;
@@ -261,9 +335,12 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    // 自動要約生成関数（高速ダイレクトモード選択時は自動スキップ）
+    // 待機用ヘルパー関数（リトライ用）
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // 自動要約生成関数（HTTP 503 / 混雑エラー時の自動リトライ付き）
     async function autoGenerateSummary(force = false) {
-      if (engineSelect.value === 'direct') return; // ダイレクトモード時は要約を実行しない
+      if (engineSelect.value === 'direct') return;
       if (isSummarizing || isExplicitlyStopped || !db) return;
 
       const now = Date.now();
@@ -288,11 +365,7 @@
 
         isSummarizing = true;
 
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: `あなたは議会や各種会議の優秀な書記です。
+        const promptText = `あなたは議会や各種会議の優秀な書記です。
 以下の文字起こしログを読み取り、質疑・議論の要点をわかりやすく整理してください。
 
 【出力要件】
@@ -302,13 +375,51 @@
 ・Markdown記号は使わず、シンプルな行頭の「・」を使った箇条書きのみで出力してください。
 
 【文字起こしログ】
-${fullText}`
-          })
-        });
+${fullText}`;
 
-        if (!response.ok) throw new Error(`API接続エラー: HTTP ${response.status}`);
-        const resData = await response.json();
-        if (resData.error) throw new Error(`Gemini APIエラー: ${resData.error.message || JSON.stringify(resData.error)}`);
+        // 最大3回まで自動リトライ（503 / 429 高負荷対策）
+        let resData = null;
+        const retryDelays = [5000, 10000, 20000]; // 5秒 → 10秒 → 20秒
+
+        for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+          try {
+            const response = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: promptText })
+            });
+
+            if (response.status === 503 || response.status === 429) {
+              throw new Error(`HTTP ${response.status} (サーバー混雑)`);
+            }
+            if (!response.ok) {
+              throw new Error(`API接続エラー: HTTP ${response.status}`);
+            }
+
+            const json = await response.json();
+            if (json.error) {
+              const errMsg = json.error.message || JSON.stringify(json.error);
+              if (errMsg.includes('high demand') || errMsg.includes('503') || errMsg.includes('429')) {
+                throw new Error(errMsg);
+              }
+              throw new Error(`Gemini APIエラー: ${errMsg}`);
+            }
+
+            resData = json;
+            clearError(); // 成功したら過去のエラー表示を消す
+            break;
+
+          } catch (fetchErr) {
+            if (attempt < retryDelays.length) {
+              console.warn(`要約API一時エラー (${fetchErr.message})。${retryDelays[attempt]/1000}秒後にリトライします...`);
+              await sleep(retryDelays[attempt]);
+            } else {
+              throw fetchErr; // 3回リトライしてもダメならエラー表示へ
+            }
+          }
+        }
+
+        if (!resData) return;
 
         const summaryResult = (
           resData.candidates?.[0]?.content?.parts?.[0]?.text ||
@@ -346,6 +457,7 @@ ${fullText}`
       }
       isExplicitlyStopped = false;
       lastSentFinalText = '';
+      finalBufferText = '';
       clearError();
 
       try {
@@ -361,9 +473,10 @@ ${fullText}`
       }
     });
 
-    stopBtn.addEventListener('click', () => {
+    stopBtn.addEventListener('click', async () => {
       if (!recognition) return;
       isExplicitlyStopped = true;
+      await flushFinalBuffer();
       try {
         recognition.stop();
       } catch(e){}
@@ -373,6 +486,8 @@ ${fullText}`
       if (!db) return;
       if (confirm('すべての字幕ログおよび要約を削除しますか？')) {
         try {
+          if (bufferFlushTimer) clearTimeout(bufferFlushTimer);
+          finalBufferText = '';
           await remove(ref(db, 'transcripts'));
           lastSentFinalText = '';
           lastSummaryTime = 0;
