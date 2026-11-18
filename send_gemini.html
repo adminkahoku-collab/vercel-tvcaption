@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>リアルタイム字幕 & 自動要約 送信画面 (統合版)</title>
+  <title>リアルタイム字幕 & 自動要約 送信画面 (Ollama対応版)</title>
   <style>
     body { 
       font-family: sans-serif; 
@@ -22,16 +22,19 @@
     label { font-size: 0.9rem; color: #ccc; font-weight: bold; }
     select { padding: 6px 12px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 0.9rem; }
     
-    button { padding: 10px 18px; font-size: 0.95rem; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; margin-right: 8px; }
+    button { padding: 10px 18px; font-size: 0.95rem; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; margin-right: 8px; margin-bottom: 6px; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     #startBtn { background: #00c853; color: #fff; }
     #startBtn:hover:not(:disabled) { background: #00e676; }
     #stopBtn { background: #d50000; color: #fff; }
     #stopBtn:hover:not(:disabled) { background: #ff1744; }
+    #forceSummaryBtn { background: #1976d2; color: #fff; }
+    #forceSummaryBtn:hover:not(:disabled) { background: #2196f3; }
     #clearBtn { background: #616161; color: #fff; }
     #clearBtn:hover:not(:disabled) { background: #757575; }
 
     .status { margin-top: 12px; font-weight: bold; font-size: 0.95rem; }
+    .summary-status { margin-top: 6px; font-size: 0.85rem; color: #81d4fa; }
     
     .preview { 
       margin-top: 15px; 
@@ -55,7 +58,7 @@
 </head>
 <body>
 
-  <h2>音声認識 & 自動要約 送信画面</h2>
+  <h2>音声認識 & ローカルAI自動要約 送信画面</h2>
 
   <div class="control-panel">
     <div class="setting-group">
@@ -82,10 +85,12 @@
     <div>
       <button id="startBtn">認識＆送信開始</button>
       <button id="stopBtn" disabled>停止</button>
+      <button id="forceSummaryBtn">今すぐ要約を実行</button>
       <button id="clearBtn">ログ消去</button>
     </div>
 
-    <div class="status">ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
+    <div class="status">認識ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
+    <div class="summary-status">ローカルAI要約 (qwen2.5:7b): <span id="summaryStatus">待機中（3分間隔）</span></div>
   </div>
 
   <div class="preview" id="previewArea">ここに認識された字幕が表示されます...</div>
@@ -126,11 +131,22 @@
 
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
+    const forceSummaryBtn = document.getElementById('forceSummaryBtn');
     const clearBtn = document.getElementById('clearBtn');
     const engineSelect = document.getElementById('engineSelect');
     const bufferWaitSelect = document.getElementById('bufferWaitSelect');
     const statusEl = document.getElementById('status');
+    const summaryStatusEl = document.getElementById('summaryStatus');
     const previewArea = document.getElementById('previewArea');
+
+    // ====================================================
+    // Ollama 設定エリア
+    // ====================================================
+    const OLLAMA_API_URL = "http://localhost:11434/api/generate";
+    const OLLAMA_MODEL = "qwen2.5:7b";
+    const SUMMARY_INTERVAL_MS = 5 * 60 * 1000; // 5分間隔（ローカルLLMなので高頻度に更新）
+    const MIN_CHAR_DIFF = 50;                  // 前回要約から40文字以上増えていれば実行
+    // ====================================================
 
     let recognition = null;
     let isExplicitlyStopped = true;
@@ -141,13 +157,10 @@
     // 単語分断防止用の結合バッファ変数
     let finalBufferText = '';
     let bufferFlushTimer = null;
-    const MAX_BUFFER_LENGTH = 60; // 60文字を超えたら待機中でも強制確定
+    const MAX_BUFFER_LENGTH = 60;
 
     let lastSummaryTime = 0;
     let lastSummaryCharLength = 0;
-    
-    const SUMMARY_INTERVAL_MS = 30 * 60 * 1000; // 30分間隔
-    const MIN_CHAR_DIFF = 50; 
     const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
 
     // 初期値は Edge に設定
@@ -161,7 +174,6 @@
         .trim();
     }
 
-    // 溜まった確定バッファを実際に Firebase (transcripts/list) へ送信する関数
     async function flushFinalBuffer() {
       if (bufferFlushTimer) {
         clearTimeout(bufferFlushTimer);
@@ -194,17 +206,14 @@
       let processedText = text ? text.trim() : '';
       if (!processedText || !db) return;
 
-      // Edgeモード時のみフィラー削除を実施
       if (engineSelect.value === 'edge') {
         processedText = cleanFillerText(processedText);
         if (!processedText) return;
       }
 
-      // ダイレクトモードまたは待機0秒設定の場合は結合待機なし
       const waitMs = (engineSelect.value === 'direct') ? 0 : parseInt(bufferWaitSelect.value, 10);
 
       if (isInterim) {
-        // すでに確定バッファに待機中の文字がある場合は、その続きとして仮表示する
         const displayInterim = finalBufferText 
           ? `${finalBufferText} ${processedText}` 
           : processedText;
@@ -215,30 +224,23 @@
         });
         updatePreview(displayInterim, 'interim');
       } else {
-        // 確定（isFinal）が来たときの処理
         if (waitMs <= 0) {
-          // 待機なし設定なら即座に確定送信
           finalBufferText = finalBufferText ? `${finalBufferText} ${processedText}` : processedText;
           await flushFinalBuffer();
         } else {
-          // バッファに文字を連結
           finalBufferText = finalBufferText ? `${finalBufferText} ${processedText}` : processedText;
 
-          // 閲覧画面の interim 欄に「確定待ち（結合中）」の文字を即反映
           await set(ref(db, 'transcripts/interim'), {
             content: finalBufferText,
             timestamp: Date.now()
           });
           updatePreview(finalBufferText, 'buffering');
 
-          // 既存タイマーをリセット
           if (bufferFlushTimer) clearTimeout(bufferFlushTimer);
 
-          // 一定文字数以上になったら待たずに確定
           if (finalBufferText.length >= MAX_BUFFER_LENGTH) {
             await flushFinalBuffer();
           } else {
-            // 指定秒数（例：2.5秒）次の確定が来なければ送信実行
             bufferFlushTimer = setTimeout(() => {
               flushFinalBuffer();
             }, waitMs);
@@ -292,7 +294,6 @@
             }
           }, 100);
         } else {
-          // 明示的停止時は残っているバッファを即確定送信
           await flushFinalBuffer();
           statusEl.textContent = '停止中';
           statusEl.style.color = '#ff5252';
@@ -335,13 +336,11 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    // 待機用ヘルパー関数（リトライ用）
-    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-    // 自動要約生成関数（HTTP 503 / 混雑エラー時の自動リトライ付き）
+    // ローカルLLM (Ollama qwen2.5:7b) による自動要約生成
     async function autoGenerateSummary(force = false) {
-      if (engineSelect.value === 'direct') return;
-      if (isSummarizing || isExplicitlyStopped || !db) return;
+      if (!force && engineSelect.value === 'direct') return;
+      if (isSummarizing || !db) return;
+      if (!force && isExplicitlyStopped) return;
 
       const now = Date.now();
       if (!force && lastSummaryTime > 0 && (now - lastSummaryTime < SUMMARY_INTERVAL_MS)) return;
@@ -350,20 +349,27 @@
         const listRef = ref(db, 'transcripts/list');
         const snapshot = await get(listRef);
         
-        if (!snapshot.exists()) return;
+        if (!snapshot.exists()) {
+          if (force) alert("要約対象の字幕ログがまだありません。");
+          return;
+        }
 
         const data = snapshot.val();
         const logs = Object.values(data).map(item => item.content);
         let fullText = logs.join('\n');
         const totalCharCount = fullText.trim().length;
 
-        if (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF) return;
+        if (!force && (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF)) return;
 
-        if (fullText.length > 4000) {
-          fullText = fullText.slice(-4000);
+        // ローカルLLMの処理速度・コンテキスト維持のため直近6000文字を対象
+        if (fullText.length > 3000) {
+          fullText = fullText.slice(-3000);
         }
 
         isSummarizing = true;
+        forceSummaryBtn.disabled = true;
+        summaryStatusEl.textContent = "要約生成中... (qwen2.5:7b 処理中)";
+        summaryStatusEl.style.color = "#ffd54f";
 
         const promptText = `あなたは議会や各種会議の優秀な書記です。
 以下の文字起こしログを読み取り、質疑・議論の要点をわかりやすく整理してください。
@@ -373,58 +379,31 @@
 ・「### 主要な話題」などの見出しやタイトルは絶対に付けないでください。
 ・「〇〇さんの意見」などの発言者情報は含めないでください。
 ・Markdown記号は使わず、シンプルな行頭の「・」を使った箇条書きのみで出力してください。
+・必ず日本語のみで回答してください。
 
 【文字起こしログ】
 ${fullText}`;
 
-        // 最大3回まで自動リトライ（503 / 429 高負荷対策）
-        let resData = null;
-        const retryDelays = [5000, 10000, 20000]; // 5秒 → 10秒 → 20秒
-
-        for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-          try {
-            const response = await fetch('/api/chat', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: promptText })
-            });
-
-            if (response.status === 503 || response.status === 429) {
-              throw new Error(`HTTP ${response.status} (サーバー混雑)`);
+        const response = await fetch(OLLAMA_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: OLLAMA_MODEL,
+            prompt: promptText,
+            stream: false,
+            options: {
+              temperature: 0.2, // 事実・数値に忠実に出力させるため低めに設定
+              num_ctx: 4096     // 長文ログを扱えるようにコンテキスト枠を確保
             }
-            if (!response.ok) {
-              throw new Error(`API接続エラー: HTTP ${response.status}`);
-            }
+          })
+        });
 
-            const json = await response.json();
-            if (json.error) {
-              const errMsg = json.error.message || JSON.stringify(json.error);
-              if (errMsg.includes('high demand') || errMsg.includes('503') || errMsg.includes('429')) {
-                throw new Error(errMsg);
-              }
-              throw new Error(`Gemini APIエラー: ${errMsg}`);
-            }
-
-            resData = json;
-            clearError(); // 成功したら過去のエラー表示を消す
-            break;
-
-          } catch (fetchErr) {
-            if (attempt < retryDelays.length) {
-              console.warn(`要約API一時エラー (${fetchErr.message})。${retryDelays[attempt]/1000}秒後にリトライします...`);
-              await sleep(retryDelays[attempt]);
-            } else {
-              throw fetchErr; // 3回リトライしてもダメならエラー表示へ
-            }
-          }
+        if (!response.ok) {
+          throw new Error(`Ollama接続エラー: HTTP ${response.status} (Ollamaが起動しているか確認してください)`);
         }
 
-        if (!resData) return;
-
-        const summaryResult = (
-          resData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          resData.text || resData.content || resData.message || ''
-        ).trim();
+        const resData = await response.json();
+        const summaryResult = (resData.response || '').trim();
 
         if (summaryResult) {
           await set(ref(db, 'transcripts/summary'), {
@@ -435,19 +414,27 @@ ${fullText}`;
 
           lastSummaryTime = now;
           lastSummaryCharLength = totalCharCount;
+          clearError();
+
+          const timeStr = new Date().toLocaleTimeString('ja-JP');
+          summaryStatusEl.textContent = `完了 (最終更新: ${timeStr} / ${intervalMinutes}分間隔)`;
+          summaryStatusEl.style.color = "#00e676";
         }
 
       } catch (err) {
-        showError("自動要約エラー: " + err.message);
+        showError("ローカルAI要約エラー: " + err.message);
+        summaryStatusEl.textContent = "エラー発生（システム通知を確認）";
+        summaryStatusEl.style.color = "#ff5252";
       } finally {
         isSummarizing = false;
+        forceSummaryBtn.disabled = false;
       }
     }
 
-    // 1分ごとにタイマーチェックを実行
+    // 30秒ごとにタイマーチェックを実行
     setInterval(() => {
       autoGenerateSummary(false);
-    }, 60 * 1000);
+    }, 30 * 1000);
 
     // ボタンのイベント登録
     startBtn.addEventListener('click', () => {
@@ -482,6 +469,10 @@ ${fullText}`;
       } catch(e){}
     });
 
+    forceSummaryBtn.addEventListener('click', () => {
+      autoGenerateSummary(true);
+    });
+
     clearBtn.addEventListener('click', async () => {
       if (!db) return;
       if (confirm('すべての字幕ログおよび要約を削除しますか？')) {
@@ -493,6 +484,8 @@ ${fullText}`;
           lastSummaryTime = 0;
           lastSummaryCharLength = 0;
           previewArea.textContent = 'ログと要約をクリアしました。';
+          summaryStatusEl.textContent = `待機中（${intervalMinutes}分間隔）`;
+          summaryStatusEl.style.color = "#81d4fa";
           alert('消去完了しました。');
           clearError();
         } catch (error) {
