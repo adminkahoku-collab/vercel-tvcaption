@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>リアルタイム字幕 & 自動要約 送信画面 (Ollama対応版)</title>
+  <title>リアルタイム字幕 & 自動要約 送信画面 (履歴追加・Ollama版)</title>
   <style>
     body { 
       font-family: sans-serif; 
@@ -85,12 +85,12 @@
     <div>
       <button id="startBtn">認識＆送信開始</button>
       <button id="stopBtn" disabled>停止</button>
-      <button id="forceSummaryBtn">今すぐ要約を実行</button>
+      <button id="forceSummaryBtn">今すぐ要約を追加</button>
       <button id="clearBtn">ログ消去</button>
     </div>
 
     <div class="status">認識ステータス: <span id="status" style="color: #ff5252;">停止中</span></div>
-    <div class="summary-status">ローカルAI要約 (qwen2.5:7b): <span id="summaryStatus">待機中（3分間隔）</span></div>
+    <div class="summary-status">ローカルAI要約 (qwen2.5:3b): <span id="summaryStatus">待機中（5分間隔・追記型）</span></div>
   </div>
 
   <div class="preview" id="previewArea">ここに認識された字幕が表示されます...</div>
@@ -140,12 +140,12 @@
     const previewArea = document.getElementById('previewArea');
 
     // ====================================================
-    // Ollama 設定エリア
+    // Ollama 設定エリア（16GBメモリ・CPU推論向け最適化）
     // ====================================================
     const OLLAMA_API_URL = "http://localhost:11434/api/generate";
     const OLLAMA_MODEL = "qwen2.5:3b";
-    const SUMMARY_INTERVAL_MS = 5 * 60 * 1000; // 5分間隔（ローカルLLMなので高頻度に更新）
-    const MIN_CHAR_DIFF = 50;                  // 前回要約から40文字以上増えていれば実行
+    const SUMMARY_INTERVAL_MS = 5 * 60 * 1000; // 5分間隔
+    const MIN_CHAR_DIFF = 40;                  // 新規発言が40文字以上増えたら要約実行
     // ====================================================
 
     let recognition = null;
@@ -154,16 +154,14 @@
     let lastInterimText = '';
     let isSummarizing = false;
 
-    // 単語分断防止用の結合バッファ変数
     let finalBufferText = '';
     let bufferFlushTimer = null;
     const MAX_BUFFER_LENGTH = 60;
 
     let lastSummaryTime = 0;
-    let lastSummaryCharLength = 0;
+    let lastSummarizedLogCount = 0; // 前回どこまでの発言を要約したかの件数インデックス
     const intervalMinutes = Math.floor(SUMMARY_INTERVAL_MS / (60 * 1000));
 
-    // 初期値は Edge に設定
     engineSelect.value = 'edge';
 
     function cleanFillerText(text) {
@@ -262,7 +260,6 @@
       }
     }
 
-    // 音声認識の初期化
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognition = new SpeechRecognition();
@@ -336,7 +333,7 @@
       showError("お使いのブラウザは Web Speech API 非対応です。Chrome または Edge を使用してください。");
     }
 
-    // ローカルLLM (Ollama qwen2.5:7b) による自動要約生成
+    // 差分ログのみを要約して transcripts/summary_list へ追加 (push) する関数
     async function autoGenerateSummary(force = false) {
       if (!force && engineSelect.value === 'direct') return;
       if (isSummarizing || !db) return;
@@ -355,24 +352,37 @@
         }
 
         const data = snapshot.val();
-        const logs = Object.values(data).map(item => item.content);
-        let fullText = logs.join('\n');
-        const totalCharCount = fullText.trim().length;
+        const allItems = Object.values(data);
 
-        if (!force && (totalCharCount - lastSummaryCharLength < MIN_CHAR_DIFF)) return;
-
-        // ローカルLLMの処理速度・コンテキスト維持のため直近6000文字を対象
-        if (fullText.length > 3000) {
-          fullText = fullText.slice(-3000);
+        // 前回要約済みの件数以降（新規発言のみ）を切り出す
+        if (allItems.length <= lastSummarizedLogCount) {
+          if (force) alert("前回の要約以降に新しい発言がありません。");
+          return;
         }
+
+        const newItems = allItems.slice(lastSummarizedLogCount);
+        let diffText = newItems.map(item => item.content).join('\n');
+
+        if (!force && diffText.trim().length < MIN_CHAR_DIFF) return;
+
+        // 1回の処理文字数上限（CPU推論最適化のため3500文字まで）
+        if (diffText.length > 3500) {
+          diffText = diffText.slice(-3500);
+        }
+
+        // 区間時刻の生成（開始ログの時刻 〜 現在時刻）
+        const startRawTime = newItems[0].timestamp || now;
+        const startStr = new Date(startRawTime).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+        const endStr = new Date(now).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+        const timeRangeLabel = `${startStr}〜${endStr}`;
 
         isSummarizing = true;
         forceSummaryBtn.disabled = true;
-        summaryStatusEl.textContent = "要約生成中... (qwen2.5:7b 処理中)";
+        summaryStatusEl.textContent = `要約生成中... (${timeRangeLabel} 分を処理中)`;
         summaryStatusEl.style.color = "#ffd54f";
 
         const promptText = `あなたは議会や各種会議の優秀な書記です。
-以下の文字起こしログを読み取り、質疑・議論の要点をわかりやすく整理してください。
+以下の文字起こしログを読み取り、この時間帯の質疑・議論の要点をわかりやすく整理してください。
 
 【出力要件】
 ・発言内で言及された「資料〇〇ページ」「〇〇款 〇〇項 〇〇目」などの参照場所や金額・単位は絶対に省略せず記載してください。
@@ -382,7 +392,7 @@
 ・必ず日本語のみで回答してください。
 
 【文字起こしログ】
-${fullText}`;
+${diffText}`;
 
         const response = await fetch(OLLAMA_API_URL, {
           method: 'POST',
@@ -392,32 +402,34 @@ ${fullText}`;
             prompt: promptText,
             stream: false,
             options: {
-              temperature: 0.2, // 事実・数値に忠実に出力させるため低めに設定
-              num_ctx: 4096     // 長文ログを扱えるようにコンテキスト枠を確保
+              temperature: 0.2,
+              num_ctx: 4096
             }
           })
         });
 
         if (!response.ok) {
-          throw new Error(`Ollama接続エラー: HTTP ${response.status} (Ollamaが起動しているか確認してください)`);
+          throw new Error(`Ollama接続エラー: HTTP ${response.status}`);
         }
 
         const resData = await response.json();
         const summaryResult = (resData.response || '').trim();
 
         if (summaryResult) {
-          await set(ref(db, 'transcripts/summary'), {
+          // 上書き(set)ではなく、履歴リストへ追加(push)する
+          const summaryListRef = ref(db, 'transcripts/summary_list');
+          await push(summaryListRef, {
             text: summaryResult,
-            updatedAt: Date.now(),
-            intervalMinutes: intervalMinutes 
+            timeRange: timeRangeLabel,
+            updatedAt: now,
+            intervalMinutes: intervalMinutes
           });
 
           lastSummaryTime = now;
-          lastSummaryCharLength = totalCharCount;
+          lastSummarizedLogCount = allItems.length; // 処理済み件数を更新
           clearError();
 
-          const timeStr = new Date().toLocaleTimeString('ja-JP');
-          summaryStatusEl.textContent = `完了 (最終更新: ${timeStr} / ${intervalMinutes}分間隔)`;
+          summaryStatusEl.textContent = `追加完了 (${timeRangeLabel} 分 / ${intervalMinutes}分間隔)`;
           summaryStatusEl.style.color = "#00e676";
         }
 
@@ -436,7 +448,6 @@ ${fullText}`;
       autoGenerateSummary(false);
     }, 30 * 1000);
 
-    // ボタンのイベント登録
     startBtn.addEventListener('click', () => {
       if (!recognition) {
         alert("音声認識機能が初期化されていません。対応ブラウザ（Chrome/Edge）でお試しください。");
@@ -475,16 +486,16 @@ ${fullText}`;
 
     clearBtn.addEventListener('click', async () => {
       if (!db) return;
-      if (confirm('すべての字幕ログおよび要約を削除しますか？')) {
+      if (confirm('すべての字幕ログおよび要約履歴を削除しますか？')) {
         try {
           if (bufferFlushTimer) clearTimeout(bufferFlushTimer);
           finalBufferText = '';
           await remove(ref(db, 'transcripts'));
           lastSentFinalText = '';
           lastSummaryTime = 0;
-          lastSummaryCharLength = 0;
+          lastSummarizedLogCount = 0;
           previewArea.textContent = 'ログと要約をクリアしました。';
-          summaryStatusEl.textContent = `待機中（${intervalMinutes}分間隔）`;
+          summaryStatusEl.textContent = `待機中（${intervalMinutes}分間隔・追記型）`;
           summaryStatusEl.style.color = "#81d4fa";
           alert('消去完了しました。');
           clearError();
