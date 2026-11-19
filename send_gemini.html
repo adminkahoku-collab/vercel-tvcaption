@@ -456,6 +456,9 @@ ${diffText}`;
       isExplicitlyStopped = false;
       lastSentFinalText = '';
       finalBufferText = '';
+      if (lastSummaryTime === 0) {
+        lastSummaryTime = Date.now(); // ★ これを追加すると開始から3分後に1回目が動く
+      }      
       clearError();
 
       try {
