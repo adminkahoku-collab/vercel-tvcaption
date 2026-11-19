@@ -11,9 +11,9 @@ body {
   margin: 0;
   padding: 10px;
   height: 100vh;
-  background-color: #121212; /* 黒ベース */
-  color: #e0e0e0;             /* 白抜き文字 */
-  overflow: hidden;           /* 全体スクロールを禁止 */
+  background-color: #121212;
+  color: #e0e0e0;
+  overflow: hidden;
 }
 
 /* 左パネル：字幕表示 */
@@ -27,8 +27,8 @@ body {
   overflow: hidden;
 }
 
-/* ログと未確定テキストを包むスクロールエリア */
-#scrollArea {
+/* スクロールエリア共通 */
+#scrollArea, #summaryScrollArea {
   flex: 1;
   overflow-y: auto;
   padding-right: 5px;
@@ -36,9 +36,9 @@ body {
 
 /* 確定字幕ログのスタイル */
 .log-item {
-  margin-bottom: 4px;   /* 点線の下側（次の発言との間）の隙間 */
-  padding-bottom: 3px;  /* 文字と点線の間の隙間 */
-  border-bottom: 1px dashed #333; /* 点線 */
+  margin-bottom: 4px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed #333;
   line-height: 1.4;
   font-size: 0.95rem;
   word-break: break-word;
@@ -62,21 +62,22 @@ body {
   word-break: break-word;
 }
 
-/* 最下段を使わないための「スペーサー（空白領域）」 */
 .bottom-spacer {
-  height: 60px; /* 画面最下部に60px分の空スペースを確保 */
+  height: 60px;
   flex-shrink: 0;
 }
 
 /* 右パネル：AI要約 */
 #right-panel {
-  flex: 1;
-  padding-left: 15px;
-  overflow-y: auto;
+  flex: 1.2;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
   background-color: #1e1e1e;
   border-radius: 6px;
   padding: 12px;
-  margin-left: 5px;
+  margin-left: 8px;
 }
 
 h2 {
@@ -88,9 +89,9 @@ h2 {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  flex-shrink: 0;
 }
 
-/* 分数表示用のバッジ装飾 */
 .interval-badge {
   font-size: 0.8rem;
   color: #aaa;
@@ -102,6 +103,7 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 button {
@@ -119,7 +121,7 @@ button:hover {
   background-color: #444;
 }
 
-/* 一時停止ボタンの専用スタイル */
+/* 一時停止ボタン */
 #pauseBtn {
   background-color: #1b5e20;
   border-color: #2e7d32;
@@ -128,7 +130,6 @@ button:hover {
 #pauseBtn:hover {
   background-color: #2e7d32;
 }
-/* 停止中（赤色表示） */
 #pauseBtn.paused {
   background-color: #b71c1c;
   border-color: #e53935;
@@ -137,22 +138,37 @@ button:hover {
   background-color: #c62828;
 }
 
-#summaryBox {
-  white-space: pre-wrap;
+/* 積み上げ型要約カードのデザイン */
+.summary-item {
   background: #2a2a2a;
   color: #f0f0f0;
-  padding: 10px;
+  padding: 10px 12px;
   border: 1px solid #444;
+  border-left: 4px solid #00e676;
   border-radius: 4px;
-  min-height: 200px;
+  margin-bottom: 10px;
   line-height: 1.5;
   font-size: 0.9rem;
 }
 
-#updateTime {
+.summary-header {
   font-size: 0.8rem;
+  color: #00e676;
+  font-weight: bold;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #3a3a3a;
+  padding-bottom: 3px;
+}
+
+.summary-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.empty-notice {
   color: #888;
-  margin-top: 8px;
+  font-size: 0.9rem;
+  padding: 10px;
 }
 </style>
 </head>
@@ -167,60 +183,64 @@ button:hover {
     <button id="dlLogMdBtn">字幕をMarkdownで保存</button>
   </div>
 
-  <!-- スクロール可能なエリア（ログ＋未確定テキスト＋最下部余白） -->
   <div id="scrollArea">
     <div id="logContainer"></div>
     <div id="interimBox" class="interim"></div>
-    <!-- 最下段を空けておくための透明なスペーサー -->
     <div class="bottom-spacer"></div>
   </div>
 </div>
 
-<!-- 右側：AI要約表示＆ダウンロードエリア -->
+<!-- 右側：AI要約表示＆ダウンロードエリア（履歴積み上げ型） -->
 <div id="right-panel">
   <h2>
-    <span>会議のAI要約</span>
-    <span id="intervalBadge" class="interval-badge">（※--分間隔で表示）</span>
+    <span>会議のAI要約（履歴）</span>
+    <span id="intervalBadge" class="interval-badge">（※5分間隔で追加）</span>
   </h2>
   <div class="btn-group">
     <button id="dlTxtBtn">要約をTXTで保存</button>
     <button id="dlMdBtn">要約をMarkdownで保存</button>
   </div>
-  <div id="summaryBox">要約を待機中...</div>
-  <div id="updateTime"></div>
+  
+  <div id="summaryScrollArea">
+    <div id="summaryContainer">
+      <div id="summaryPlaceholder" class="empty-notice">要約を待機中...</div>
+    </div>
+    <div class="bottom-spacer"></div>
+  </div>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { getDatabase, ref, onChildAdded, onValue, onChildRemoved } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-// 1. Firebase 初期化
 const firebaseConfig = {
   databaseURL: "https://caption-db-cbff9-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-let currentSummaryText = "";
 const logContainer = document.getElementById('logContainer');
 const interimBox = document.getElementById('interimBox');
-const summaryBox = document.getElementById('summaryBox');
+const summaryContainer = document.getElementById('summaryContainer');
 const intervalBadge = document.getElementById('intervalBadge');
-const updateTime = document.getElementById('updateTime');
 const scrollArea = document.getElementById('scrollArea');
+const summaryScrollArea = document.getElementById('summaryScrollArea');
 const pauseBtn = document.getElementById('pauseBtn');
 
-// 一時停止制御用の状態変数
 let isPaused = false;
-let pendingLogs = [];       // 停止中に溜めておく確定ログ
-let latestInterimText = ""; // 停止中の最新「発話中」テキスト
+let pendingLogs = [];
+let pendingSummaries = [];
+let latestInterimText = "";
 
-// スクロールを最下部へ送る処理
 function scrollToBottom() {
   scrollArea.scrollTop = scrollArea.scrollHeight;
 }
 
-// 1件分のログ要素を画面に描画する関数
+function scrollSummaryToBottom() {
+  summaryScrollArea.scrollTop = summaryScrollArea.scrollHeight;
+}
+
+// 1件分の字幕ログを描画
 function appendLogElement(data) {
   const div = document.createElement('div');
   div.className = 'log-item';
@@ -233,11 +253,38 @@ function appendLogElement(data) {
   logContainer.appendChild(div);
 }
 
-// ボタンの表示テキスト更新
+// 1件分の要約ブロックを描画
+function appendSummaryElement(data) {
+  const placeholder = document.getElementById('summaryPlaceholder');
+  if (placeholder) placeholder.remove();
+
+  const card = document.createElement('div');
+  card.className = 'summary-item';
+
+  const header = document.createElement('div');
+  header.className = 'summary-header';
+  const timeLabel = data.timeRange ? `【${data.timeRange} の要点】` : `【要点メモ】`;
+  header.textContent = timeLabel;
+
+  const body = document.createElement('div');
+  body.className = 'summary-body';
+  body.textContent = data.text;
+
+  card.appendChild(header);
+  card.appendChild(body);
+  summaryContainer.appendChild(card);
+
+  if (data.intervalMinutes) {
+    intervalBadge.innerText = `（※${data.intervalMinutes}分間隔で追加）`;
+  }
+}
+
+// 一時停止ボタンの表示更新
 function updatePauseButtonUI() {
   if (isPaused) {
     pauseBtn.classList.add('paused');
-    const countText = pendingLogs.length > 0 ? ` (未読 ${pendingLogs.length}件)` : "";
+    const totalPending = pendingLogs.length + pendingSummaries.length;
+    const countText = totalPending > 0 ? ` (未読 ${totalPending}件)` : "";
     pauseBtn.innerText = `▶ 更新再開${countText}`;
   } else {
     pauseBtn.classList.remove('paused');
@@ -245,17 +292,19 @@ function updatePauseButtonUI() {
   }
 }
 
-// 一時停止／再開の切り替え処理
 pauseBtn.addEventListener('click', () => {
   isPaused = !isPaused;
 
   if (!isPaused) {
-    // 停止解除時：溜まっていた確定ログを一気に描画
     if (pendingLogs.length > 0) {
       pendingLogs.forEach(item => appendLogElement(item));
       pendingLogs = [];
     }
-    // 最新の「発話中」テキストを反映
+    if (pendingSummaries.length > 0) {
+      pendingSummaries.forEach(item => appendSummaryElement(item));
+      pendingSummaries = [];
+      scrollSummaryToBottom();
+    }
     interimBox.innerText = latestInterimText ? `[発話中...] ${latestInterimText}` : '';
     scrollToBottom();
   }
@@ -263,39 +312,35 @@ pauseBtn.addEventListener('click', () => {
   updatePauseButtonUI();
 });
 
-// 2. 確定ログ (transcripts/list) の取得
+// 確定字幕ログ (transcripts/list) の受信
 const listRef = ref(db, 'transcripts/list');
 onChildAdded(listRef, (snapshot) => {
   const data = snapshot.val();
   if (data && data.content) {
     if (isPaused) {
-      // 停止中なら画面描画せずバッファに蓄積
       pendingLogs.push(data);
       updatePauseButtonUI();
     } else {
-      // 通常時は即座に描画してスクロール
       appendLogElement(data);
       scrollToBottom();
     }
   }
 });
 
-// 3. 送信側で「ログ消去」が実行された場合のクリア処理
+// ログ消去時のリセット処理
 onChildRemoved(listRef, () => {
   logContainer.innerHTML = '';
   interimBox.innerText = '';
-  summaryBox.innerText = '要約データはまだありません。';
-  updateTime.innerText = '';
-  currentSummaryText = '';
-  intervalBadge.innerText = '（※--分間隔で表示）';
+  summaryContainer.innerHTML = '<div id="summaryPlaceholder" class="empty-notice">要約データはまだありません。</div>';
+  intervalBadge.innerText = '（※5分間隔で追加）';
 
-  // バッファもリセット
   pendingLogs = [];
+  pendingSummaries = [];
   latestInterimText = "";
   updatePauseButtonUI();
 });
 
-// 4. 途中経過 (transcripts/interim) のリアルタイム受信
+// 途中経過 (transcripts/interim) の受信
 const interimRef = ref(db, 'transcripts/interim');
 onValue(interimRef, (snapshot) => {
   const data = snapshot.val();
@@ -311,27 +356,18 @@ onValue(interimRef, (snapshot) => {
   }
 });
 
-// 5. 要約データ (transcripts/summary) のリアルタイム受信
-const summaryRef = ref(db, 'transcripts/summary');
-onValue(summaryRef, (snapshot) => {
+// 要約履歴 (transcripts/summary_list) の追加受信
+const summaryListRef = ref(db, 'transcripts/summary_list');
+onChildAdded(summaryListRef, (snapshot) => {
   const data = snapshot.val();
   if (data && data.text) {
-    currentSummaryText = data.text;
-    summaryBox.innerText = data.text;
-
-    const mins = (data.intervalMinutes !== undefined && data.intervalMinutes !== null) 
-      ? data.intervalMinutes 
-      : 20;
-
-    intervalBadge.innerText = `（※${mins}分間隔で表示）`;
-
-    const dateStr = new Date(data.updatedAt).toLocaleTimeString('ja-JP');
-    updateTime.innerText = `最終要約更新: ${dateStr}`;
-  } else {
-    summaryBox.innerText = '要約データはまだありません。';
-    updateTime.innerText = '';
-    currentSummaryText = "";
-    intervalBadge.innerText = '（※--分間隔で表示）';
+    if (isPaused) {
+      pendingSummaries.push(data);
+      updatePauseButtonUI();
+    } else {
+      appendSummaryElement(data);
+      scrollSummaryToBottom();
+    }
   }
 });
 
@@ -348,9 +384,8 @@ function downloadFile(content, fileName, mimeType) {
   URL.revokeObjectURL(url);
 }
 
-// 6. 字幕ログの保存処理
+// 字幕ログの保存
 function downloadLog(format) {
-  // 停止中の未読分も含めて保存したい場合は一時解除を促すか、現在表示分を保存
   const items = Array.from(logContainer.querySelectorAll('.log-item'));
   if (items.length === 0) {
     alert('保存できる字幕ログがありません。');
@@ -362,8 +397,7 @@ function downloadLog(format) {
   const logTexts = items.map(el => el.innerText);
 
   if (format === 'txt') {
-    const textContent = logTexts.join('\n');
-    downloadFile(textContent, `会議字幕ログ_${datePrefix}.txt`, 'text/plain');
+    downloadFile(logTexts.join('\n'), `会議字幕ログ_${datePrefix}.txt`, 'text/plain');
   } else if (format === 'md') {
     const mdContent = `# 会議字幕ログ (${datePrefix})\n\n` + 
       logTexts.map(t => `- ${t}`).join('\n') + 
@@ -372,9 +406,10 @@ function downloadLog(format) {
   }
 }
 
-// 7. 要約の保存処理
+// 要約履歴の保存（積み上がった全カードを一括出力）
 function downloadSummary(format) {
-  if (!currentSummaryText) {
+  const cards = Array.from(summaryContainer.querySelectorAll('.summary-item'));
+  if (cards.length === 0) {
     alert('保存できる要約データがありません。');
     return;
   }
@@ -383,14 +418,25 @@ function downloadSummary(format) {
   const datePrefix = now.toISOString().split('T')[0];
 
   if (format === 'txt') {
-    downloadFile(currentSummaryText, `会議要約_${datePrefix}.txt`, 'text/plain');
+    const textContent = cards.map(card => {
+      const header = card.querySelector('.summary-header').innerText;
+      const body = card.querySelector('.summary-body').innerText;
+      return `${header}\n${body}`;
+    }).join('\n\n----------------------------------------\n\n');
+
+    downloadFile(textContent, `会議要約_${datePrefix}.txt`, 'text/plain');
   } else if (format === 'md') {
-    const mdContent = `# 会議要約レポート (${datePrefix})\n\n${currentSummaryText}\n\n---\n*自動生成日時: ${now.toLocaleString('ja-JP')}*`;
+    const mdBlocks = cards.map(card => {
+      const header = card.querySelector('.summary-header').innerText;
+      const body = card.querySelector('.summary-body').innerText;
+      return `### ${header}\n\n${body}`;
+    }).join('\n\n---\n\n');
+
+    const mdContent = `# 会議要約レポート (${datePrefix})\n\n${mdBlocks}\n\n---\n*出力日時: ${now.toLocaleString('ja-JP')}*`;
     downloadFile(mdContent, `会議要約_${datePrefix}.md`, 'text/markdown');
   }
 }
 
-// イベントリスナーの登録
 document.getElementById('dlLogTxtBtn').addEventListener('click', () => downloadLog('txt'));
 document.getElementById('dlLogMdBtn').addEventListener('click', () => downloadLog('md'));
 document.getElementById('dlTxtBtn').addEventListener('click', () => downloadSummary('txt'));
